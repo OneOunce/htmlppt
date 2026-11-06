@@ -397,7 +397,53 @@
       background:var(--c-glass-disabled);
       cursor:default;
     }
+    /* 菜单右侧的快捷键提示：只在有快捷键的项上出现（目前只有「演讲者模式」的 P） */
+    .ctx-key{
+      margin-left:auto;padding-left:12px;
+      font-size:.72rem;opacity:.42;
+      font-variant-numeric:tabular-nums;
+    }
+    /* 轻提示：只在「弹出窗口被拦截」这类情况下出现，3.6 秒自动淡出。
+       刻意不用 alert()——对话框会阻塞渲染线程、还得用户点一下才能继续，
+       放映途中弹出来极扫兴；而且它连无头测试都跑不过去。 */
+    #toast{
+      position:absolute;left:50%;bottom:calc(var(--edge) + 56px);
+      z-index:10001;
+      padding:8px 14px;
+      border:1px solid var(--c-border);border-radius:var(--radius-card);
+      background:var(--c-glass-hover);color:var(--c-text);
+      font-size:.84rem;line-height:1.5;
+      backdrop-filter:blur(var(--blur));
+      -webkit-backdrop-filter:blur(var(--blur));
+      opacity:0;pointer-events:none;
+      transform:translateX(-50%) translateY(6px);
+      transition:opacity var(--ease), transform var(--ease);
+    }
+    #toast.show{ opacity:1;transform:translateX(-50%) translateY(0); }
+    /* ===== 观众屏「干净输出」 =====
+       演讲者窗口里的开关一次性收掉除幻灯片之外的全部控件：字幕条、页码、左右翻页按钮。
+       状态存在 localStorage['ppt-clean']，类挂在 <html> 上而不是 <body>——
+       因为在 <head> 里就能挂上（见下方那行脚本），首帧的样式计算就已经生效；
+       挂 <body> 的话得等末尾脚本执行，刷新会先闪一帧字幕条（同「字幕首帧闪烁」那次的坑）。
+       这里只压 opacity + pointer-events，不用 display:none —— 字幕容器与页码的
+       getBoundingClientRect 还被拖拽、悬停判定、右键命中用着，布局不能塌。 */
+    html.is-clean #subtitle-container,
+    html.is-clean #page-indicator{
+      opacity:0 !important;
+      pointer-events:none !important;
+    }
+    /* 翻页按钮是整块容器，display:none 不影响布局（本来就是绝对定位），最干净 */
+    html.is-clean #controls{ display:none; }
   </style>
+  <script>
+    // 干净输出的首帧：必须在解析 <body> 之前把类挂到 <html> 上。
+    // 只在这里读一次 localStorage，之后由末尾的同步桥接管增删。
+    try {
+      if (localStorage.getItem('ppt-clean') === '1') {
+        document.documentElement.classList.add('is-clean');
+      }
+    } catch (err) { /* 受限环境忽略，退回「不干净」 */ }
+  </script>
 </head>
 <body>
   <div id="slide-container"></div>
@@ -421,12 +467,18 @@
     </div>
     <div id="subtitle"></div>
   </div>
+  <div id="toast" role="status" aria-live="polite"></div>
   <!-- 右键面板：分两种上下文，同一套视觉。
        page     ：在幻灯片空白处右键，只放「显示字幕」，后续功能继续往里加；
        subtitle ：在可见的字幕条上右键，才出现三档显示方式。 -->
   <div id="ctx-menu" role="menu" aria-label="右键菜单" aria-hidden="true" data-context="page">
     <div class="ctx-group" data-group="page">
       <button class="ctx-item" type="button" role="menuitem" aria-checked="false" data-action="show-subtitle"><span class="dot"></span>显示字幕</button>
+      <button class="ctx-item" type="button" role="menuitem" data-action="presenter"><span class="dot"></span>演讲者模式<span class="ctx-key">P</span></button>
+      <!-- 全屏只能由「真实点击」触发：requestFullscreen 要瞬时用户激活，
+           F 键多半落在幻灯片 iframe 里，转发成合成事件后激活已丢失（实测必被拒），
+           所以这里给一个必定带点击激活的入口；全屏中该项显示为选中态，再点一次退出。 -->
+      <button class="ctx-item" type="button" role="menuitem" aria-checked="false" data-action="fullscreen"><span class="dot"></span>全屏显示</button>
     </div>
     <div class="ctx-group" data-group="subtitle">
       <div class="ctx-title">字幕显示</div>
@@ -476,6 +528,14 @@
 
     subtitleElement.innerText = subtitleLines[subtitleIdx] || '';
 
+    // 统一改句入口：优先走 window.pptSub.show()（由末尾的导航脚本导出），
+    // 它会一并同步导航按钮禁用态与跨窗口同步键；只有脚本还没执行完的极端情况才自己兜底改。
+    function stepSubtitle(delta){
+      if (window.pptSub) { window.pptSub.show(subtitleIdx + delta); return; }
+      subtitleIdx = Math.max(0, Math.min(subtitleLines.length - 1, subtitleIdx + delta));
+      subtitleElement.innerText = subtitleLines[subtitleIdx] || '';
+    }
+
     document.addEventListener('keydown', e => {
       // 注意：转发事件（iframe → 父页面）带 detail 标记，但 KeyboardEvent.detail 是
       // 只读属性、赋值会被静默忽略，因此无法靠它去重；好在事件跨 document 派发本就不会
@@ -483,18 +543,15 @@
 
       if (e.code === 'Space') {
         e.preventDefault();
-        const now = Date.now();
         if (spaceTimeout) {
           // 双击：跳转到上一句
           clearTimeout(spaceTimeout);
           spaceTimeout = null;
-          subtitleIdx = Math.max(0, subtitleIdx - 1);
-          subtitleElement.innerText = subtitleLines[subtitleIdx];
+          stepSubtitle(-1);
         } else {
           // 单击：等待阈值后跳转到下一句
           spaceTimeout = setTimeout(() => {
-            subtitleIdx = Math.min(subtitleLines.length - 1, subtitleIdx + 1);
-            subtitleElement.innerText = subtitleLines[subtitleIdx];
+            stepSubtitle(1);
             spaceTimeout = null;
           }, threshold);
         }
@@ -502,7 +559,14 @@
         e.preventDefault();
         if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prev();
         if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next();
+      } else if (e.key === 'p' || e.key === 'P') {
+        // 与右键菜单里的「演讲者模式」同一个入口：弹出/聚焦演讲者控制台
+        e.preventDefault();
+        if (window.pptPresenter) window.pptPresenter.open();
       }
+      // 不设 F 全屏快捷键：requestFullscreen 要「瞬时用户激活」，而 F 多半按在
+      // 幻灯片 iframe 上、被转发成合成 KeyboardEvent 后激活已丢，浏览器直接拒。
+      // 全屏统一走右键菜单的「全屏显示」（真实点击必带激活）。
     });
   </script>
   <script>
@@ -572,6 +636,7 @@
           let active = false;
           if (btn.dataset.mode) active = (btn.dataset.mode === mode);
           else if (btn.dataset.action === 'show-subtitle') active = (mode === 'persist-show');
+          else if (btn.dataset.action === 'fullscreen') active = !!document.fullscreenElement;
           btn.classList.toggle('active', active);
           btn.setAttribute('aria-checked', active ? 'true' : 'false');
         }
@@ -762,7 +827,9 @@
       // 父页面拿不到 target，因此这里按坐标矩形命中判断。
       function hitIndicator(x, y){
         const el = document.getElementById('page-indicator');
-        if (!el || !el.classList.contains('show')) return false;
+        // 干净输出时页码不可见，这里也不该命中——否则会在看不见的页码位置弹出缩略图面板
+        if (!el || document.documentElement.classList.contains('is-clean')) return false;
+        if (!el.classList.contains('show')) return false;
         const r = el.getBoundingClientRect();
         return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
       }
@@ -872,6 +939,19 @@
 
         const btn = e.target.closest && e.target.closest('.ctx-item');
         if (!btn) return;
+        if (btn.dataset.action === 'presenter') {
+          // 打开演讲者控制台：窗口已存在就只聚焦，不重复开第二份
+          closeMenu();
+          openPresenter();
+          return;
+        }
+        if (btn.dataset.action === 'fullscreen') {
+          // 全屏中再点 → 退出并清掉选中态；否则进入全屏。
+          // 必须在这一跳事件里同步调用 requestFullscreen：点击本身就是用户激活。
+          closeMenu();
+          toggleFull();
+          return;
+        }
         if (btn.dataset.mode) {
           mode = btn.dataset.mode;
         } else if (btn.dataset.action === 'show-subtitle') {
@@ -885,6 +965,169 @@
         closeMenu();
       });
 
+      // 轻提示（不阻塞）：开窗被拦截时用，不用 alert 的理由见样式注释
+      const toastEl = document.getElementById('toast');
+      let toastTimer = null;
+      function toast(msg){
+        if (!toastEl) return;
+        toastEl.textContent = msg;
+        toastEl.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function(){ toastEl.classList.remove('show'); }, 3600);
+      }
+
+      // ---- 观众屏自动全屏 ----
+      // 打开演讲者控制台时顺手把主窗口切全屏，之后不再主动退出：
+      // 演讲者窗口的翻页 / 切句 / 干净输出都只写 localStorage，碰不到全屏状态。
+      //
+      // 必须在本函数的调用栈里同步发起 requestFullscreen —— 它要「瞬时用户激活」，
+      // 而 openPresenter() 只由 P 键或菜单点击触发，正好持有激活。若改到 setTimeout、
+      // 或等 popup 的 load 事件里再调，一律 NotAllowedError（这条踩过）。
+      const FS_KEY = 'ppt-fs';    // '1' = 本机放映时观众屏应保持全屏
+      // 意愿落盘：刷新观众屏后仍然「想全屏」，下一次点击/按键就能补回来（浏览器不允许无手势全屏）
+      let wantFull = (function(){
+        try { return localStorage.getItem(FS_KEY) === '1'; } catch (err) { return false; }
+      })();
+      let lastRestore = 0;        // 自动恢复的节流时间戳
+      let fsWarned = false;       // 「浏览器拒绝全屏」只提示一次，别每次按键都弹
+
+      function fsSupported(){
+        return !!(document.fullscreenEnabled && document.documentElement.requestFullscreen);
+      }
+
+      // Chromium 的 Keyboard Lock：把 Esc 交给页面处理，浏览器不再拿它当「退出全屏」。
+      // 菜单里的 Esc 照常关，按住 Esc 约 2 秒仍可强行退出（浏览器保留的后门，锁不掉）。
+      // Firefox / Safari 没有这个 API，退化为「按 Esc 就退出全屏」，属平台限制。
+      function lockEsc(){
+        if (!navigator.keyboard || !navigator.keyboard.lock) return;
+        try {
+          const p = navigator.keyboard.lock(['Escape']);
+          if (p && p.catch) p.catch(function(){ /* 非全屏或被拒：忽略 */ });
+        } catch (err) { /* 不支持就忽略 */ }
+      }
+      function unlockEsc(){
+        if (!navigator.keyboard || !navigator.keyboard.unlock) return;
+        try { navigator.keyboard.unlock(); } catch (err) { /* 忽略 */ }
+      }
+
+      function enterFull(){
+        wantFull = true;
+        try { localStorage.setItem(FS_KEY, '1'); } catch (err) { /* 忽略 */ }
+        if (!fsSupported()) return false;
+        if (document.fullscreenElement) { lockEsc(); return true; }
+        try {
+          const p = document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+          if (p && p.catch) p.catch(function(){
+            if (fsWarned) return;
+            fsWarned = true;
+            toast('浏览器拒绝了全屏请求，可按 F11 手动全屏');
+          });
+        } catch (err) {
+          if (!fsWarned) { fsWarned = true; toast('浏览器拒绝了全屏请求，可按 F11 手动全屏'); }
+          return false;
+        }
+        return true;
+      }
+
+      function exitFull(){
+        wantFull = false;
+        try { localStorage.setItem(FS_KEY, '0'); } catch (err) { /* 忽略 */ }
+        unlockEsc();
+        if (document.fullscreenElement && document.exitFullscreen) {
+          const p = document.exitFullscreen();
+          if (p && p.catch) p.catch(function(){ /* 忽略 */ });
+        }
+      }
+
+      function toggleFull(){
+        if (document.fullscreenElement) exitFull();
+        else enterFull();
+      }
+
+      document.addEventListener('fullscreenchange', function(){
+        if (document.fullscreenElement) {
+          lockEsc();                       // 必须在全屏生效之后再锁，否则 API 拒绝
+        } else {
+          unlockEsc();
+          if (wantFull) toast('全屏已退出 · 右键「全屏显示」可恢复');
+        }
+        // 菜单里的「全屏显示」跟着变选中态（菜单开着时被 Esc / F11 改状态也能同步）
+        refreshMenu();
+      });
+
+      // 放映中被系统/窗口切换挤掉全屏（Esc 除外）后，观众屏上任何一次点击或按键
+      // 都把它补回来——这类事件天然带用户激活，是唯一能重新请求全屏的时机。
+      // Esc 特意放过：用户主动退出时不该被强行拉回。
+      document.addEventListener('pointerdown', restoreFull, true);
+      document.addEventListener('keydown', function(e){
+        if (e.key === 'Escape') return;
+        restoreFull();
+      }, true);
+      function restoreFull(){
+        if (!wantFull || document.fullscreenElement || !fsSupported()) return;
+        const now = Date.now();
+        if (now - lastRestore < 1500) return;   // 节流：别每次按键都试
+        lastRestore = now;
+        enterFull();
+      }
+
+      // ---- 演讲者模式：弹出控制台窗口 ----
+      // 这里只管开窗与摆位；翻页/切句的同步全在 presenter.html 与文件末尾的同步桥里，
+      // 所以就算演讲者窗口关掉，观众屏也不受任何影响。
+      let presenterWin = null;
+
+      function openPresenter(){
+        const exists = presenterWin && !presenterWin.closed;
+        if (exists) {
+          try { presenterWin.focus(); } catch (err) { /* 忽略 */ }
+          enterFull();     // 没有新窗口要开，这一次按键可以安全地拿去全屏
+          return;
+        }
+
+        // 第一次开控制台：只能「先开窗、后全屏」，顺序不能反，原因三条都实测过：
+        //   ① requestFullscreen 和 window.open 都吃「瞬时用户激活」，一次按键只够一件；
+        //   ② 先全屏再开窗 → window.open 被判为无手势，直接拦截；
+        //   ③ 打开新窗口会让当前窗口退出全屏（Chromium 行为），所以「开窗瞬间顺手全屏」也不成立。
+        // 因此这里只开窗，并把「本次放映期望全屏」这个意愿记下来；
+        // 观众屏的下一次点击/按键由 restoreFull() 接住，自动补上全屏。
+        wantFull = true;
+        try { localStorage.setItem(FS_KEY, '1'); } catch (err) { /* 忽略 */ }
+
+        const w = Math.min(1280, Math.max(960, Math.round(window.innerWidth * 0.86)));
+        const h = Math.min(880, Math.max(640, Math.round(window.innerHeight * 0.9)));
+        const left = Math.max(0, (window.screenX || 0) + 60);
+        const top  = Math.max(0, (window.screenY || 0) + 40);
+        presenterWin = window.open(
+          'presenter.html',
+          'ppt-presenter',
+          'popup=yes,width=' + w + ',height=' + h + ',left=' + left + ',top=' + top
+        );
+        if (!presenterWin) {
+          toast('浏览器拦截了弹出窗口：请允许本站弹窗，或手动打开同目录下的 presenter.html');
+          return;
+        }
+        try { presenterWin.focus(); } catch (err) { /* 忽略 */ }
+        // 一次性提示：全屏要靠观众屏自己的手势，浏览器不给第二选择
+        toast('控制台已打开 · 点一下放映画面即进入全屏');
+
+        // 能拿到屏幕信息就把控制台丢到「非当前屏」（扩展分屏的常见用法）。
+        // Window Management API 只在 Chromium 且用户授权后可用；拿不到就保持上面的默认位置，
+        // 由用户自己拖到副屏——Firefox 与部分 Linux 环境下也只有这条路。
+        if (window.getScreenDetails) {
+          window.getScreenDetails().then(function(details){
+            const other = details.screens.filter(function(s){ return s !== details.currentScreen; })[0];
+            if (!other || !presenterWin || presenterWin.closed) return;
+            try {
+              presenterWin.moveTo(other.availLeft + 40, other.availTop + 40);
+              presenterWin.resizeTo(
+                Math.min(1280, other.availWidth - 80),
+                Math.min(880, other.availHeight - 80)
+              );
+            } catch (err) { /* 跨屏移动被拒：保持默认位置 */ }
+          }).catch(function(){ /* 用户拒绝授权：忽略 */ });
+        }
+      }
+
       applyMode();   // 初始应用（默认 hover → 字幕默认隐藏）
 
       // 供 iframe 内的 mousemove / contextmenu 调用
@@ -893,6 +1136,12 @@
         openMenu: openMenu,
         closeMenu: closeMenu,
         getMode: function(){ return mode; }
+      };
+      // 供快捷键 P 与菜单项调用
+      window.pptPresenter = {
+        open: openPresenter,
+        fullscreen: toggleFull,
+        restore: restoreFull        // 给 iframe 内的点击/按键补全屏用
       };
     })();
   </script>
@@ -962,6 +1211,12 @@
             );
             if (isEditable) return;
 
+            // 全屏补位：幻灯片铺满视口，观众的第一下几乎必然落在 iframe 里，
+            // 父页面的 pointerdown 收不到。这里在同一次「真实」按键里直接调父页面的
+            // restore()，激活还在，父页面据此请求全屏才不被拒。
+            // 注意不能用上面那种转发出去的新 KeyboardEvent——合成事件不带用户激活。
+            try { if (parent.pptPresenter) parent.pptPresenter.restore(); } catch (_) {}
+
             // 选中文字 / 点进分页内容后，按键 target 不再是 body，
             // 故不再限制 target===body，统一转发给父页面处理
             const ev = new KeyboardEvent('keydown', {
@@ -1012,6 +1267,14 @@
           // 控件按钮显示后 pointer-events:auto，会覆盖在 iframe 之上；鼠标落到按钮上时
           // iframe 会触发 mouseleave → 隐藏按钮 → 鼠标又穿透回 iframe → 再显示 → 再 mouseleave，
           // 形成无限显隐循环（正是之前「一直闪烁」的根因）。隐藏统一交给上面的迟滞距离判定。
+        } catch (_) {}
+
+        // 鼠标点进幻灯片同样补一次全屏请求：点击本身带激活，
+        // 且在 iframe 的事件回调里同步调用，父页面的 requestFullscreen 才会被接受。
+        try {
+          win.document.addEventListener('pointerdown', function(){
+            try { if (parent.pptPresenter) parent.pptPresenter.restore(); } catch (_) {}
+          }, true);
         } catch (_) {}
 
         // 幻灯片内右键：屏蔽浏览器原生菜单，改弹「页面菜单」。
@@ -1129,11 +1392,17 @@
         prevNav.disabled = subtitleIdx <= 0;
         nextNav.disabled = subtitleIdx >= subtitleLines.length - 1;
       }
-      function showSubtitle(idx){
+      // 改句的唯一入口。silent=true 表示「这条命令来自别的窗口」，只更新画面、不回写同步键，
+      // 避免两个窗口互相写来写去（虽然同值不触发 storage 事件，但少一次写总是干净）。
+      const SUB_KEY = 'ppt-sub-idx';
+      function showSubtitle(idx, opts){
         if (!subtitleLines.length) return;
         subtitleIdx = Math.max(0, Math.min(subtitleLines.length - 1, idx));
         subtitleElement.innerText = subtitleLines[subtitleIdx];
         updateNavState();
+        if (!(opts && opts.silent)) {
+          try { localStorage.setItem(SUB_KEY, String(subtitleIdx)); } catch (err) { /* 受限环境忽略 */ }
+        }
       }
       prevNav.addEventListener('click', () => showSubtitle(subtitleIdx - 1));
       nextNav.addEventListener('click', () => showSubtitle(subtitleIdx + 1));
@@ -1142,6 +1411,53 @@
         btn.addEventListener('mousedown', e => e.stopPropagation());
       });
       updateNavState();
+
+      // 供空格翻句（前面的脚本）与末尾的跨窗口同步桥调用。
+      // subtitleIdx 是脚本级 let 词法绑定，别的脚本只能读、不能安全地改，所以必须走这个门。
+      window.pptSub = {
+        show: showSubtitle,
+        index: function(){ return subtitleIdx; },
+        total: function(){ return subtitleLines.length; }
+      };
+    })();
+  </script>
+  <script>
+    // ---- 跨窗口同步桥：演讲者窗口 ↔ 观众屏 ----
+    // 真相存在 localStorage，两个窗口各自监听 storage 事件。
+    // 该事件只在「别的窗口」写入时触发，同一窗口自己写不会回声；写同值也不触发事件，
+    // 所以「收到通知 → 执行 → 再写回同值」这条链是收敛的，不会自激。
+    //
+    // 四个键：ppt-current（页号，loadSlide 本来就在写）、ppt-sub-idx（字幕句号）、
+    //        ppt-clean（观众屏干净输出）、ppt-subtitle-mode（三档，归观众屏自己管，不在这里同步）。
+    (function(){
+      const CUR_KEY   = 'ppt-current';
+      const SUB_KEY   = 'ppt-sub-idx';
+      const CLEAN_KEY = 'ppt-clean';
+
+      function applyClean(on){
+        document.documentElement.classList.toggle('is-clean', !!on);
+      }
+
+      window.addEventListener('storage', e => {
+        if (e.key === CUR_KEY && window.pptPages) {
+          const i = parseInt(e.newValue, 10);
+          if (!Number.isNaN(i)) window.pptPages.go(i);
+        } else if (e.key === SUB_KEY && window.pptSub) {
+          const i = parseInt(e.newValue, 10);
+          if (!Number.isNaN(i)) window.pptSub.show(i, { silent: true });
+        } else if (e.key === CLEAN_KEY) {
+          applyClean(e.newValue === '1');
+        }
+      });
+
+      // 启动时对齐：演讲者窗口在别处翻过页/切过句，刷新观众屏要回到同一位置。
+      // 页号已由 loadSlide 里的 localStorage['ppt-current'] 自行恢复，
+      // 这里只补「字幕句号」与「干净态」——干净态已在 <head> 里先行挂过，此处幂等再对一次。
+      applyClean(localStorage.getItem(CLEAN_KEY) === '1');
+      if (window.pptSub) {
+        const i = parseInt(localStorage.getItem(SUB_KEY), 10);
+        if (!Number.isNaN(i) && i > 0) window.pptSub.show(i, { silent: true });
+      }
     })();
   </script>
 </body>

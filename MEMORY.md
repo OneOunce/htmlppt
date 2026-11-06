@@ -186,6 +186,8 @@
 | headless 截图面板透明、文字看不清 | 无 GPU 时 `backdrop-filter` 不生效 | 截图时临时补底色 |
 | 改了 `pages/` 新页不出现 | 没跑构建 / 文件名无序号 | `python generate_index.py` |
 | 分页页码显示跟文件名对不上 | 显示的是排序后数组下标，不是文件名编号 | 正常行为 |
+| 按 `F` 全屏没反应 / 被浏览器拒 | 按键落在幻灯片 iframe，父页面收到的是合成 `KeyboardEvent`，瞬时激活已丢 | 已移除 `F`，改用右键「全屏显示」（不变量 20） |
+| `P` 之后想"先全屏、延时再开控制台" | `requestFullscreen` 已吃掉这一轮瞬时激活，之后的 `window.open` 一律被拦 | 只能先开窗、再点击补全屏（AGENTS 第五节） |
 
 ---
 
@@ -225,7 +227,24 @@
 
 - **推理不算证据，采样才算。** 涉及"事件到没到、显示了几帧、闪没闪"的问题必须实际跑 headless 采样。
 - **CDP 驱动**：Edge 无头 + `--remote-debugging-port`，Node 22 内置 WebSocket 连过去，用 `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` 派发真实输入。Node 侧读不到 `innerWidth`，视口尺寸从页面 `Runtime.evaluate` 取。
+- **全屏只能拿有界面的窗口测。** headless 里 `requestFullscreen` 不会真的成立，验证"全屏 + 开窗"的激活约束必须起真实 Chrome 窗口（`--new-window`，不带 `--headless`），再用 `Input.dispatchKeyEvent` 造真实手势；`Page.bringToFront` 会干扰全屏判定，少用。
 - **构建层先跑**：秒级检查优先于浏览器验证——`generate_index.py --check`（退出码 1 = 过期）、`node --check js/*.js`、`index.html` 内联脚本按 `<script>` 正则切块逐块 `node --check`、比对构建前后 `index.html` 的 `mtime` 证明零写入。
+
+## 3.6 全屏与用户激活的实测结论（Chrome 125，真实窗口）
+
+| 手法 | 结果 |
+| --- | --- |
+| 同一手势内 `requestFullscreen()` → `window.open()` | 全屏成立，**开窗被拦**（返回 `null`） |
+| 同一手势内 `window.open()` → `requestFullscreen()` | 开窗成立，全屏抛 **`TypeError`**（文档失焦） |
+| 先全屏 → `setTimeout` 400ms 再开窗 | **被拦** |
+| 先全屏 → `setTimeout` 1500ms 再开窗 | **被拦** |
+| 先全屏 → 真实点击的回调里开窗 | **开窗成功**，但 `document.fullscreenElement` 变回 `null`（新窗口必退全屏） |
+| 观众屏 iframe 内点击 → 注入脚本同步调 `parent.pptPresenter.restore()` | **补全屏成功**（同一真实事件的激活仍然有效） |
+| `presenter.html` 里调 `opener.document.documentElement.requestFullscreen()` | **`TypeError`**，跨窗口不可能 |
+
+**原因**：`requestFullscreen` 与 `window.open` 都属于「消耗瞬时激活」的 API。一次真实手势（按键/点击）只提供一份瞬时的用户激活，先调用的那个把它吃掉；此后无论同步还是延时，第二个都会因"没有用户激活"被拒。**注意 `--disable-popup-blocking` 无效**——这不是弹窗拦截策略问题，是激活状态问题。
+
+**结论**：`P` 只能做"开窗"，全屏必须留给**下一次真实点击**（`restoreFull()`）；全屏入口做成右键菜单项而不是键盘键，因为键盘事件一旦从 iframe 转发过来就已经不是用户激活了。
 
 ---
 

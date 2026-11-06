@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>演讲者视图</title>
+  <!--
+    演讲者控制台（扩展分屏用的第二窗口）。
+
+    它和放映器 index.html 的关系：
+      · 各自独立运行，任何一个关掉/刷新都不影响另一个；
+      · 只共享 js/pages.js 与 js/subtitle.js 两个数据文件（同样是整份生成，别手改）；
+      · 状态靠 localStorage 的四个键同步，见文件末尾「跨窗口同步」那一段。
+    所以这个文件可以单独打开，也可以被 index.html 的「演讲者模式」弹出来，行为一致。
+  -->
+  <style>
+    /* ===== 与 index.html 完全同一套设计变量（玻璃拟态深色） ===== */
+    :root{
+      --c-glass: rgba(18,20,26,0.5);
+      --c-glass-hover: rgba(18,20,26,0.82);
+      --c-glass-disabled: rgba(18,20,26,0.28);
+      --c-border: rgba(255,255,255,0.16);
+      --c-text: #eef1f6;
+      --c-accent: rgba(120,170,255,0.9);
+      --blur: 12px;
+      --radius-card: 12px;
+      --ease: .22s cubic-bezier(.2,.7,.3,1);
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    *{ box-sizing:border-box; }
+    html,body{
+      height:100%;margin:0;overflow:hidden;
+      background:#0f1115;color:var(--c-text);font-family:var(--font);
+      /* 控制台是长时间盯着的画面，禁掉文字选中，避免误拖选 */
+      user-select:none;
+    }
+
+    /* 整体两行：顶栏（自适应高）+ 主体（吃掉剩余高度） */
+    #app{
+      height:100%;
+      display:grid;grid-template-rows:auto minmax(0,1fr);
+      gap:10px;padding:12px;
+    }
+
+    /* ===================== 顶栏 ===================== */
+    #bar{ display:flex;align-items:center;gap:12px;min-height:30px; }
+    .bar-page{ display:flex;align-items:baseline;gap:10px;min-width:0; }
+    #pageNum{
+      flex:0 0 auto;
+      padding:3px 10px;border-radius:8px;
+      border:1px solid var(--c-border);background:rgba(255,255,255,.08);
+      font-size:.95rem;letter-spacing:.04em;font-variant-numeric:tabular-nums;
+    }
+    #pageName{
+      font-size:.9rem;opacity:.72;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+    .bar-right{ margin-left:auto;display:flex;align-items:center;gap:6px; }
+    .chip{
+      appearance:none;display:inline-flex;align-items:center;gap:6px;
+      padding:5px 10px;border:1px solid var(--c-border);border-radius:8px;
+      background:rgba(255,255,255,.06);color:var(--c-text);
+      font:inherit;font-size:.82rem;font-variant-numeric:tabular-nums;
+      cursor:pointer;
+      transition:background var(--ease), opacity var(--ease);
+    }
+    .chip:hover{ background:rgba(255,255,255,.12); }
+    .chip:active{ transform:scale(.98); }
+    .chip:focus-visible{ outline:none;border-color:var(--c-accent); }
+    /* 暂停＝数字变灰，不再跳动，一眼能看出来计时停了 */
+    .chip.paused{ opacity:.45; }
+    .chip svg{ width:14px;height:14px;display:block; }
+
+    /* ===================== 主体：左主区 + 右控制列 ===================== */
+    main{
+      display:grid;grid-template-columns:minmax(0,1fr) 300px;
+      gap:12px;min-height:0;
+    }
+    /* 左列：上面预览吃大头，下面字幕吃小头；两行都用 minmax(0,·) 才能让内部滚动生效 */
+    .col-main{
+      display:grid;grid-template-rows:minmax(0,1.4fr) minmax(0,1fr);
+      gap:12px;min-height:0;
+    }
+
+    /* ---- 当前页预览 ----
+       外层只负责占位，边框与白底放在 .stage 上：16:9 的幻灯片在宽窗口里本来就不可能
+       填满整块区域，如果边框画在外层，就会看到「一个大黑框里插着一条竖的白片」。
+       舞台尺寸由 JS 算（优先撑满列宽，撑不下再按可用高度封顶），见 fitStage()。 */
+    .stage-wrap{ position:relative;min-height:0; }
+    .stage{
+      position:absolute;left:50%;top:50%;
+      transform:translate(-50%,-50%);
+      overflow:hidden;
+      border:1px solid var(--c-border);border-radius:8px;
+      background:#fff;
+    }
+    /* 所有「真实分页 HTML」的 iframe 都用这个类：1280×720 渲染，再按容器宽度等比缩放 */
+    .frame1280{
+      position:absolute;left:0;top:0;
+      width:1280px;height:720px;border:0;
+      transform-origin:0 0;
+      background:#fff;
+      pointer-events:none;   /* 预览不可交互，点击穿透到外层按钮/容器 */
+    }
+
+    /* ---- 字幕区 ---- */
+    .sub{
+      display:flex;flex-direction:column;gap:6px;min-height:0;
+      padding:10px 14px 8px;
+      border:1px solid var(--c-border);border-radius:var(--radius-card);
+      background:rgba(18,20,26,.72);
+    }
+    /* 当前句：整个控制台最该被一眼看到的东西，字号给足 */
+    #subNow{
+      flex:0 0 auto;
+      display:flex;align-items:center;
+      min-height:2.6em;
+      font-size:1.62rem;line-height:1.42;font-weight:600;letter-spacing:.01em;
+    }
+    /* 没有字幕文本时的占位，压小压淡，不抢戏 */
+    #subNow.empty{ font-size:1rem;font-weight:400;opacity:.3; }
+    .sub-next{
+      flex:0 0 auto;
+      display:flex;align-items:baseline;gap:8px;
+      min-height:1.5em;
+      font-size:.92rem;line-height:1.45;color:#c9d2e0;opacity:.55;
+    }
+    .sub-next.hide{ visibility:hidden; }
+    .sub-next .label{
+      flex:0 0 auto;
+      padding:1px 5px;border-radius:4px;
+      background:rgba(255,255,255,.08);
+      font-size:.66rem;letter-spacing:.08em;
+    }
+    .sub-list{
+      flex:1 1 auto;min-height:0;overflow-y:auto;
+      margin:2px 0 0;padding:6px 0 0;
+      list-style:none;
+      border-top:1px solid var(--c-border);
+      overscroll-behavior:contain;
+    }
+    /* 与「全部页」网格同一套细轨滚动条（同样只在支持 ::-webkit-scrollbar 的引擎里定制） */
+    .sub-list::-webkit-scrollbar{ width:8px; }
+    .sub-list::-webkit-scrollbar-track{ background:transparent; }
+    .sub-list::-webkit-scrollbar-thumb{
+      background:rgba(255,255,255,.16);
+      background-clip:padding-box;border:2px solid transparent;border-radius:999px;
+    }
+    .sub-list::-webkit-scrollbar-thumb:hover{ background:rgba(255,255,255,.3);background-clip:padding-box; }
+    @supports not selector(::-webkit-scrollbar){
+      .sub-list{ scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.22) transparent; }
+    }
+    .sub-list li{
+      position:relative;
+      padding:4px 8px 4px 10px;border-radius:6px;
+      font-size:.8rem;line-height:1.5;color:#b9c2d0;opacity:.42;
+      cursor:pointer;
+      transition:background var(--ease), opacity var(--ease),
+                 color var(--ease), box-shadow var(--ease);
+    }
+    .sub-list li:hover{ background:rgba(255,255,255,.06);opacity:.78; }
+    /* 当前句：列表里唯一需要「抬眼一瞬就定位」的行。
+       左侧主色竖条 + 淡蓝渐变底 + 内描边 + 加粗提亮，与上方大字当前句是同一条，
+       上下两处一起亮，扫视时不会看错行。 */
+    .sub-list li.on{
+      opacity:1;color:#fff;font-weight:600;
+      background:linear-gradient(90deg, rgba(120,170,255,.24), rgba(120,170,255,.05) 72%);
+      box-shadow:inset 0 0 0 1px rgba(120,170,255,.34);
+    }
+    .sub-list li.on::before{
+      content:'';position:absolute;left:2px;top:50%;
+      width:3px;height:1.1em;margin-top:-.55em;
+      border-radius:2px;background:var(--c-accent);
+    }
+
+    /* ---- 右列 ---- */
+    .col-side{ display:flex;flex-direction:column;gap:10px;min-height:0; }
+
+    /* 上一页 / 下一页并排。aspect-ratio 保证与 iframe 的 16:9 严格对应，
+       缩略图缩放比由 JS 按实际宽度算（宽度是可变的，写死不靠谱）。 */
+    .thumbs{ display:grid;grid-template-columns:1fr 1fr;gap:8px;flex:0 0 auto; }
+    .thumb{
+      position:relative;aspect-ratio:16/9;
+      padding:0;border:1px solid var(--c-border);border-radius:8px;
+      overflow:hidden;background:#fff;cursor:pointer;
+      transition:border-color var(--ease), transform var(--ease), opacity var(--ease);
+    }
+    .thumb:hover{ transform:translateY(-1px);border-color:rgba(255,255,255,.3); }
+    .thumb:disabled{ opacity:.3;cursor:default;transform:none; }
+    /* 「下一页」是真正要盯的一张，给一条淡淡的主色描边 */
+    .thumb.next{ border-color:rgba(120,170,255,.5); }
+    .thumb:focus-visible{ outline:none;border-color:var(--c-accent); }
+    .thumb .tag{
+      position:absolute;left:0;top:0;z-index:2;
+      padding:1px 6px 2px;border-radius:0 0 6px 0;
+      background:rgba(8,10,14,.82);color:#fff;
+      font-size:.62rem;letter-spacing:.02em;font-variant-numeric:tabular-nums;
+    }
+
+    .all-head{
+      flex:0 0 auto;
+      display:flex;align-items:center;justify-content:space-between;
+      padding:0 2px;font-size:.72rem;opacity:.55;
+    }
+    .allpages{
+      flex:1 1 auto;min-height:0;overflow-y:auto;
+      display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+      gap:6px;padding:1px 2px 2px;
+      align-content:start;
+      overscroll-behavior:contain;
+    }
+    /* 滚动条：沿用面板那套「细轨圆头」，但因为不在悬停才出现的场景里，
+       直接常显一条细的即可，不做浮动滑轨（控制台内部，不是投影画面）。 */
+    .allpages::-webkit-scrollbar{ width:8px; }
+    .allpages::-webkit-scrollbar-button{ display:none;width:0;height:0; }
+    .allpages::-webkit-scrollbar-track{ background:transparent; }
+    .allpages::-webkit-scrollbar-thumb{
+      background:rgba(255,255,255,.16);
+      background-clip:padding-box;border:2px solid transparent;border-radius:999px;
+    }
+    .allpages::-webkit-scrollbar-thumb:hover{ background:rgba(255,255,255,.3);background-clip:padding-box; }
+    /* 只在「不支持 ::-webkit-scrollbar 的引擎」里写标准属性：
+       Chrome 一旦认了 scrollbar-width 就会整组忽略上面的定制。 */
+    @supports not selector(::-webkit-scrollbar){
+      .allpages{ scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.22) transparent; }
+    }
+    .tile{
+      position:relative;aspect-ratio:16/9;
+      padding:0;border:1px solid var(--c-border);border-radius:7px;
+      overflow:hidden;background:#fff;cursor:pointer;
+      transition:border-color var(--ease);
+    }
+    .tile:hover{ border-color:rgba(255,255,255,.3); }
+    .tile.on{ border-color:var(--c-accent); }
+    .tile:focus-visible{ outline:none;border-color:var(--c-accent); }
+    .tile .tag{
+      position:absolute;left:0;bottom:0;z-index:2;
+      padding:0 5px;border-radius:0 6px 0 0;
+      background:rgba(8,10,14,.78);color:#fff;
+      font-size:.6rem;line-height:15px;font-variant-numeric:tabular-nums;
+    }
+    .tile.on .tag{ background:var(--c-accent);color:#0a0e15; }
+
+    /* 干净输出开关：做成一枚开关片（不用 checkbox，避免空格键翻句时误触/焦点干扰） */
+    .clean{
+      flex:0 0 auto;
+      appearance:none;display:flex;align-items:center;gap:8px;
+      padding:8px 10px;border:1px solid var(--c-border);border-radius:8px;
+      background:rgba(255,255,255,.04);color:var(--c-text);
+      font:inherit;font-size:.8rem;cursor:pointer;
+      transition:background var(--ease);
+    }
+    .clean:hover{ background:rgba(255,255,255,.09); }
+    .clean:focus-visible{ outline:none;border-color:var(--c-accent); }
+    .clean .sw{
+      position:relative;flex:0 0 auto;
+      width:32px;height:18px;border-radius:999px;
+      background:rgba(255,255,255,.14);
+      transition:background var(--ease);
+    }
+    .clean .sw::after{
+      content:'';position:absolute;left:2px;top:2px;
+      width:14px;height:14px;border-radius:50%;
+      background:#cfd6e2;
+      transition:transform var(--ease), background var(--ease);
+    }
+    .clean[aria-pressed="true"] .sw{ background:rgba(120,170,255,.55); }
+    .clean[aria-pressed="true"] .sw::after{ transform:translateX(14px);background:#fff; }
+    .clean kbd{
+      margin-left:auto;
+      padding:1px 5px;border-radius:4px;
+      border:1px solid var(--c-border);background:rgba(255,255,255,.08);
+      font:inherit;font-size:.66rem;opacity:.6;
+    }
+
+    /* 缺数据时的兜底提示 */
+    .fatal{
+      position:absolute;inset:0;display:grid;place-items:center;
+      color:#8a93a3;font-size:.86rem;line-height:1.7;text-align:center;padding:24px;
+    }
+
+    /* 窄窗口：右列先变窄，再彻底收起（这是控制台，不是给人拿手机看的） */
+    @media (max-width:1180px){ main{ grid-template-columns:minmax(0,1fr) 250px; } }
+    @media (max-width:860px){
+      main{ grid-template-columns:minmax(0,1fr); }
+      .col-side{ display:none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header id="bar">
+      <div class="bar-page">
+        <span id="pageNum">— / —</span>
+        <span id="pageName"></span>
+      </div>
+      <div class="bar-right">
+        <button id="timerBtn" class="chip" type="button" title="点击暂停 / 继续（T）">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <span id="timerText">00:00:00</span>
+        </button>
+        <button id="timerReset" class="chip" type="button" title="计时归零（R）">↺</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="col-main">
+        <div class="stage-wrap" id="stageWrap">
+          <div class="stage" id="stage"><iframe id="curFrame" class="frame1280" tabindex="-1" aria-hidden="true" scrolling="no"></iframe></div>
+        </div>
+
+        <div class="sub">
+          <div id="subNow" class="empty">（没有字幕文本）</div>
+          <div class="sub-next hide" id="subNextWrap">
+            <span class="label">下一句</span><span id="subNext"></span>
+          </div>
+          <ol class="sub-list" id="subList"></ol>
+        </div>
+      </section>
+
+      <aside class="col-side">
+        <div class="thumbs">
+          <button class="thumb" id="thumbPrev" type="button" title="上一页">
+            <span class="tag">上一页</span><iframe class="frame1280" tabindex="-1" aria-hidden="true" scrolling="no" loading="lazy"></iframe>
+          </button>
+          <button class="thumb next" id="thumbNext" type="button" title="下一页">
+            <span class="tag">下一页</span><iframe class="frame1280" tabindex="-1" aria-hidden="true" scrolling="no" loading="lazy"></iframe>
+          </button>
+        </div>
+
+        <div class="all-head"><span>全部页</span><span id="allCount"></span></div>
+        <div class="allpages" id="allPages"></div>
+
+        <button class="clean" id="cleanBtn" type="button" aria-pressed="false" title="把观众屏的字幕条、页码、翻页按钮全部收起（P）">
+          <span class="sw" aria-hidden="true"></span>
+          <span>观众屏干净输出</span>
+          <kbd>P</kbd>
+        </button>
+      </aside>
+    </main>
+  </div>
+
+  <script src="js/subtitle.js"></script>
+  <script src="js/pages.js"></script>
+  <script>
+    /* ===================================================================
+       演讲者控制台逻辑
+       状态三个：index（页号）、sub（字幕句号）、clean（观众屏是否干净输出）
+       全部以 localStorage 为真相，改动即写键，收到别的窗口的 storage 事件即跟随。
+       =================================================================== */
+    (function(){
+      'use strict';
+
+      const CUR_KEY   = 'ppt-current';
+      const SUB_KEY   = 'ppt-sub-idx';
+      const CLEAN_KEY = 'ppt-clean';
+      const SPACE_GAP = 300;      // 与放映器一致：空格单击=下一句，阈值内再按=上一句
+
+      const files  = (typeof slideFiles !== 'undefined' && slideFiles.length) ? slideFiles : [];
+      const titles = (typeof slideTitles !== 'undefined') ? slideTitles : [];
+      const lines  = (typeof SUBTITLE_TEXT === 'string' && SUBTITLE_TEXT)
+        ? SUBTITLE_TEXT.split('\n').map(function(s){ return s.trim(); }).filter(Boolean)
+        : [];
+
+      const $ = function(id){ return document.getElementById(id); };
+      const stageWrap = $('stageWrap'), stage = $('stage'), curFrame = $('curFrame');
+      const colMain = document.querySelector('.col-main');
+      const pageNum = $('pageNum'), pageName = $('pageName');
+      const subNow = $('subNow'), subNextWrap = $('subNextWrap'), subNext = $('subNext'), subList = $('subList');
+      const thumbPrev = $('thumbPrev'), thumbNext = $('thumbNext');
+      const allPages = $('allPages'), allCount = $('allCount');
+      const cleanBtn = $('cleanBtn');
+      const timerBtn = $('timerBtn'), timerText = $('timerText'), timerReset = $('timerReset');
+
+      let index = 0, sub = 0, clean = false;
+      let curSrc = '';
+      let allBuilt = false;
+      let spaceTimer = null;
+
+      /* ---------------- 通用：写同步键 ---------------- */
+      // 写同值不会触发别的窗口的 storage 事件，所以这里不需要额外去重。
+      function write(key, val){
+        try { localStorage.setItem(key, val); } catch (err) { /* 受限环境忽略 */ }
+      }
+      function readInt(key, dflt){
+        const v = parseInt(localStorage.getItem(key), 10);
+        return Number.isNaN(v) ? dflt : v;
+      }
+
+      /* ---------------- 缩放：1280×720 的 iframe 等比缩进容器 ---------------- */
+      // 舞台：在三个上限里取最小——① 撑满列宽所需的 16:9 高度；② 屏高的 66%（保证字幕区不被
+      // 挤成一条缝）；③ 给字幕区留够 MIN_SUB 之后剩下的高度。宽窗口下通常被 ② 卡住，
+      // 这时左右会留一点空，但因为 .stage-wrap 已经不再画框，留白就是页面底色，不显突兀。
+      const MIN_SUB = 190;      // 字幕区最小高度（大字当前句 + 下一句 + 至少三行列表）
+      const ROW_GAP = 12;       // 与 .col-main 的 gap 保持一致
+      let lastRows = '';
+      function fitStage(){
+        const W = stageWrap.clientWidth;
+        const colH = colMain.clientHeight;
+        if (!W || !colH) return;
+        const h = Math.min(
+          W * 9 / 16,
+          colH * 0.66,
+          Math.max(120, colH - ROW_GAP - MIN_SUB)
+        );
+        const w = h * 16 / 9;
+        stage.style.width  = w.toFixed(1) + 'px';
+        stage.style.height = h.toFixed(1) + 'px';
+        curFrame.style.transform = 'scale(' + (w / 1280) + ')';
+        const rows = h.toFixed(1) + 'px minmax(0,1fr)';
+        if (rows !== lastRows) {
+          lastRows = rows;
+          colMain.style.gridTemplateRows = rows;
+        }
+      }
+      // 缩略图/缩略片：宽度由布局决定，缩放比 = 实际宽度 / 1280
+      function fitFrame(wrap){
+        const frame = wrap.querySelector('.frame1280');
+        if (!frame) return;
+        const w = wrap.clientWidth;
+        if (!w) return;
+        frame.style.transform = 'scale(' + (w / 1280) + ')';
+      }
+      function fitAll(){
+        fitStage();
+        const wraps = document.querySelectorAll('.thumb, .tile');
+        for (let i = 0; i < wraps.length; i++) fitFrame(wraps[i]);
+      }
+
+      /* ---------------- 页 ---------------- */
+      function loadPage(i, silent){
+        if (!files.length) return;
+        i = Math.max(0, Math.min(files.length - 1, i));
+        index = i;
+        const src = 'pages/' + files[i];
+        if (src !== curSrc) {
+          curSrc = src;
+          curFrame.src = src;
+        }
+        pageNum.textContent = (i + 1) + ' / ' + files.length;
+        pageName.textContent = titles[i] || '';
+        renderThumbs();
+        markTile();
+        if (!silent) write(CUR_KEY, String(i));
+      }
+
+      function setThumb(btn, i){
+        const frame = btn.querySelector('iframe');
+        const tag = btn.querySelector('.tag');
+        const ok = files.length && i >= 0 && i < files.length;
+        btn.disabled = !ok;
+        const src = ok ? ('pages/' + files[i]) : 'about:blank';
+        if (btn.dataset.src !== src) {
+          btn.dataset.src = src;
+          frame.src = src;
+        }
+        const kind = btn === thumbNext ? '下一页' : '上一页';
+        tag.textContent = ok ? (kind + ' · ' + (i + 1)) : kind;
+        btn.dataset.index = ok ? String(i) : '';
+      }
+      function renderThumbs(){
+        setThumb(thumbPrev, index - 1);
+        setThumb(thumbNext, index + 1);
+        // 上一页/下一页刚换过 src，下一帧量宽度才不会拿到旧布局
+        requestAnimationFrame(function(){ fitFrame(thumbPrev); fitFrame(thumbNext); });
+      }
+
+      /* ---------------- 全部页缩略图 ---------------- */
+      // 首次打开后才建：一进页面就把全部分页各加载一遍太浪费，
+      // 但控制台一打开就要能跳页，所以延到首帧之后立刻建（不是等用户点开）。
+      function buildAll(){
+        if (allBuilt || !files.length) return;
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < files.length; i++) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'tile';
+          b.dataset.index = String(i);
+          b.title = '第 ' + (i + 1) + ' 页' + (titles[i] ? ' · ' + titles[i] : '');
+
+          const fr = document.createElement('iframe');
+          fr.className = 'frame1280';
+          fr.src = 'pages/' + files[i];
+          fr.setAttribute('tabindex', '-1');
+          fr.setAttribute('aria-hidden', 'true');
+          fr.setAttribute('scrolling', 'no');
+          fr.setAttribute('loading', 'lazy');
+          b.appendChild(fr);
+
+          const tag = document.createElement('span');
+          tag.className = 'tag';
+          tag.textContent = String(i + 1);
+          b.appendChild(tag);
+
+          frag.appendChild(b);
+        }
+        allPages.appendChild(frag);
+        allBuilt = true;
+        allCount.textContent = files.length + ' 页';
+        fitAll();
+        markTile();
+      }
+      function markTile(){
+        const tiles = allPages.children;
+        for (let i = 0; i < tiles.length; i++) {
+          tiles[i].classList.toggle('on', Number(tiles[i].dataset.index) === index);
+        }
+        const on = allPages.querySelector('.tile.on');
+        if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest' });
+      }
+
+      /* ---------------- 字幕 ---------------- */
+      function buildSubList(){
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < lines.length; i++) {
+          const li = document.createElement('li');
+          li.dataset.index = String(i);
+          li.textContent = lines[i];
+          frag.appendChild(li);
+        }
+        subList.appendChild(frag);
+      }
+      /* 把当前句停在列表的垂直中线：上下各留半屏上下文，视线不用每次重新找行。
+         用「两个 rect 的相对位移」而不是 li.offsetTop —— ol 没有定位，li 的 offsetParent
+         不是列表本身，`offsetTop` 会带上列表在页面里的偏移，滚到错位置。
+         首帧（含刷新后恢复的句号）用瞬移，之后才用 smooth：否则一打开页面就能看见
+         列表自己往下滑一段，像是加载出错了。 */
+      let subCentered = false;
+      function centerSub(li){
+        if (!li || !subList) return;
+        const box = subList.getBoundingClientRect();
+        const row = li.getBoundingClientRect();
+        const delta = (row.top - box.top) - (box.height - row.height) / 2;
+        const max = Math.max(0, subList.scrollHeight - subList.clientHeight);
+        const top = Math.max(0, Math.min(max, subList.scrollTop + delta));
+        if (Math.abs(top - subList.scrollTop) < 1) { subCentered = true; return; }
+        const reduce = window.matchMedia
+          && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (subCentered && !reduce) subList.scrollTo({ top: top, behavior: 'smooth' });
+        else subList.scrollTop = top;
+        subCentered = true;
+      }
+      function renderSub(){
+        const cur = lines[sub] || '';
+        if (cur) {
+          subNow.textContent = cur;
+          subNow.classList.remove('empty');
+        } else {
+          subNow.textContent = lines.length ? '（字幕已到末尾）' : '（没有字幕文本）';
+          subNow.classList.add('empty');
+        }
+        const nx = lines[sub + 1];
+        subNext.textContent = nx || '';
+        subNextWrap.classList.toggle('hide', !nx);
+
+        const lis = subList.children;
+        for (let i = 0; i < lis.length; i++) lis[i].classList.toggle('on', i === sub);
+        centerSub(lis[sub]);
+      }
+      function setSub(i, silent){
+        if (!lines.length) return;
+        sub = Math.max(0, Math.min(lines.length - 1, i));
+        renderSub();
+        if (!silent) write(SUB_KEY, String(sub));
+      }
+
+      /* ---------------- 干净输出 ---------------- */
+      function setClean(on, silent){
+        clean = !!on;
+        cleanBtn.setAttribute('aria-pressed', clean ? 'true' : 'false');
+        if (!silent) write(CLEAN_KEY, clean ? '1' : '0');
+      }
+
+      /* ---------------- 计时器 ---------------- */
+      // 累计毫秒 + 本段起始时刻：暂停就是「结算进累计值」，恢复就是「重新起算」。
+      let timerAcc = 0, timerStart = Date.now(), timerPaused = false;
+      function timerMs(){
+        return timerAcc + (timerPaused ? 0 : (Date.now() - timerStart));
+      }
+      function fmt(ms){
+        const t = Math.floor(ms / 1000);
+        const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+        const p = function(n){ return n < 10 ? '0' + n : String(n); };
+        return p(h) + ':' + p(m) + ':' + p(s);
+      }
+      function tick(){ timerText.textContent = fmt(timerMs()); }
+      function toggleTimer(){
+        if (timerPaused) { timerStart = Date.now(); timerPaused = false; }
+        else { timerAcc += Date.now() - timerStart; timerPaused = true; }
+        timerBtn.classList.toggle('paused', timerPaused);
+        timerBtn.title = timerPaused ? '已暂停，点击继续（T）' : '点击暂停（T）';
+        tick();
+      }
+      function resetTimer(){
+        timerAcc = 0; timerStart = Date.now(); timerPaused = false;
+        timerBtn.classList.remove('paused');
+        timerBtn.title = '点击暂停（T）';
+        tick();
+      }
+
+      /* ---------------- 事件绑定 ---------------- */
+      thumbPrev.addEventListener('click', function(){ loadPage(index - 1); });
+      thumbNext.addEventListener('click', function(){ loadPage(index + 1); });
+      allPages.addEventListener('click', function(e){
+        const tile = e.target.closest('.tile');
+        if (!tile) return;
+        loadPage(Number(tile.dataset.index));
+      });
+      subList.addEventListener('click', function(e){
+        const li = e.target.closest('li');
+        if (!li) return;
+        setSub(Number(li.dataset.index));
+      });
+      cleanBtn.addEventListener('click', function(){ setClean(!clean); });
+      timerBtn.addEventListener('click', toggleTimer);
+      timerReset.addEventListener('click', resetTimer);
+
+      // 键盘：与放映器同一套手感。空格＝下一句（阈值内双击＝上一句），方向键翻页。
+      document.addEventListener('keydown', function(e){
+        if (e.code === 'Space') {
+          e.preventDefault();
+          if (spaceTimer) { clearTimeout(spaceTimer); spaceTimer = null; setSub(sub - 1); }
+          else { spaceTimer = setTimeout(function(){ setSub(sub + 1); spaceTimer = null; }, SPACE_GAP); }
+          return;
+        }
+        switch (e.key) {
+          case 'ArrowLeft': case 'ArrowUp':   e.preventDefault(); loadPage(index - 1); break;
+          case 'ArrowRight': case 'ArrowDown':e.preventDefault(); loadPage(index + 1); break;
+          case 'Home': e.preventDefault(); loadPage(0); break;
+          case 'End':  e.preventDefault(); loadPage(files.length - 1); break;
+          case 'p': case 'P': e.preventDefault(); setClean(!clean); break;
+          case 't': case 'T': e.preventDefault(); toggleTimer(); break;
+          case 'r': case 'R': e.preventDefault(); resetTimer(); break;
+          default: break;
+        }
+      });
+
+      /* ---------------- 跨窗口同步 ---------------- */
+      window.addEventListener('storage', function(e){
+        if (e.key === CUR_KEY) {
+          const i = parseInt(e.newValue, 10);
+          if (!Number.isNaN(i)) loadPage(i, true);
+        } else if (e.key === SUB_KEY) {
+          const i = parseInt(e.newValue, 10);
+          if (!Number.isNaN(i)) setSub(i, true);
+        } else if (e.key === CLEAN_KEY) {
+          setClean(e.newValue === '1', true);
+        }
+      });
+
+      /* ---------------- 启动 ---------------- */
+      if (!files.length) {
+        stageWrap.insertAdjacentHTML('beforeend',
+          '<div class="fatal">缺少 <b>js/pages.js</b><br>先运行 python generate_index.py</div>');
+      }
+
+      buildSubList();
+
+      // 先读存档再渲染：这样刷新演讲者窗口能回到原来那一页/那一句，而不是跳回第一页
+      index = readInt(CUR_KEY, 0);
+      sub   = readInt(SUB_KEY, 0);
+      clean = (localStorage.getItem(CLEAN_KEY) === '1');
+
+      loadPage(index, true);
+      setSub(sub, true);
+      setClean(clean, true);
+      tick();
+
+      fitStage();
+      renderThumbs();
+
+      // 全部页缩略图延到首帧之后建：先让预览出来，再慢慢加载 N 个 iframe
+      requestAnimationFrame(function(){ buildAll(); });
+      setTimeout(function(){ buildAll(); }, 120);   // 双保险（rAF 在某些情况下会被跳过）
+
+      setInterval(tick, 250);
+
+      // 尺寸变化：舞台内接矩形与每个缩略片的缩放比都要重算
+      if (window.ResizeObserver) {
+        new ResizeObserver(function(){ fitStage(); }).observe(stageWrap);
+        new ResizeObserver(function(){ fitAll(); }).observe(allPages);
+        // 窗口变高变矮后「中线」也跟着变，当前句要重新回到中间（否则会偏上/偏下）
+        new ResizeObserver(function(){ centerSub(subList.children[sub]); }).observe(subList);
+      }
+      window.addEventListener('resize', fitAll);
+    })();
+  </script>
+</body>
+</html>

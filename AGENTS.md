@@ -45,6 +45,8 @@
 
 **读法**：改代码前先读本文件的「不可破坏的不变量」和「验证方法」；想知道"以前在哪儿栽过跟头"，翻 `MEMORY.md`。
 
+> **单数 `AGENT.md` 已不在根目录。** 它原本只是 16 行兼容指针（给仍读单数文件名的老工具用），现已按用户要求移入 `.ignore/AGENT.MD`，与旧版全文归档 `.ignore/htmlppt/AGENT.MD-20261106170347.md` 放在一起。`AGENTS.md` 仍是唯一的面向 Agent 的权威说明书，别再往根目录恢复单数文件。
+
 ---
 
 ## 一、项目是什么
@@ -54,6 +56,7 @@
 - 左右方向键 / ↑↓ 翻页，空格逐句翻字幕
 - 字幕条可拖动、可三档控制显隐
 - 右键出玻璃风格菜单：显示字幕、字幕显示方式、分页跳转（带真实缩略图）
+- **演讲者模式**：`presenter.html` 在副屏当控制台——当前页预览、上一页/下一页、全部页跳转、字幕提词、计时器，还能一键把观众屏收成纯幻灯片
 
 ### 为什么有这个项目
 
@@ -71,13 +74,16 @@ AI 时代有两个事实：
 - 本体必须是**单个 `index.html`**，不引入框架、不打包、不生成副本。
 - 幻灯片必须能**作为独立 html 文件单独存在**（可以单独打开、单独发人），不能塞进 `index.html` 里维护。
 
+> **`presenter.html` 是这条目标的唯一例外，且是「可选伴随页」。** 演讲者视图必须活在与观众屏**不同的窗口**里，而第二个窗口只能是另一个文档——这是浏览器给的唯一路径，没有"同一份代码渲染到两个窗口"的做法（`document.write` 拼模板也是同一个文件在干活，只是把 HTML 藏进了 JS 字符串）。所以约定是：**放映本体仍是单个 `index.html`，`presenter.html` 不参与放映，删掉它放映器照旧完整可用。**
+
 ---
 
 ## 二、文件结构
 
 ```
 htmlppt/
-├── index.html              # 放映器本体：界面 + 全部交互逻辑（约 1150 行）
+├── index.html              # 放映器本体：界面 + 全部交互逻辑（约 1450 行）
+├── presenter.html          # 演讲者控制台（可选伴随页，不参与放映；删掉不影响放映）
 ├── serve.py                # 本地 HTTP 服务（同源必需，见第四节）
 ├── serve.bat               # Windows 一键启动 serve.py
 ├── generate_index.py       # 构建脚本：扫描 pages/ → 整份写 js/*.js（不碰 index.html）
@@ -154,22 +160,48 @@ const SUBTITLE_TEXT = "第一句\n第二句";
 
 | 行号 | 内容 |
 | --- | --- |
-| 6–400 | `<style>`：设计变量 `:root` + 全部样式（含缩略图三档、悬浮滚动条 `.pages-rail`、字幕上方导航 `.subtitle-navs`） |
-| 402–461 | HTML 骨架：`#slide-container`、`#page-indicator`、`#controls`、`#subtitle-container`（**初始带 `is-hidden`**；内含 `.subtitle-navs` 按钮行 + 空的 `#subtitle`）、`#ctx-menu`（含列数切换按钮、`.pages-body` 内的 `#pages-grid` 与 `#pages-rail`） |
-| 463 | `<script src="js/subtitle.js">`：字幕文本常量 |
-| 464–507 | 字幕行解析（用 `SUBTITLE_TEXT` 填充 DOM）、空格翻句、方向键翻页 |
-| 508–898 | 字幕三档显隐 + 右键菜单三上下文 + 分页缩略图面板 + 列数切换 + 悬浮滚动条（导出 `window.pptSubtitle`） |
-| 899 | `<script src="js/pages.js">`：分页清单常量 |
-| 900–1063 | 缺清单兜底提示 + 幻灯片加载 + `iframe.onload` 注入 + `prev/next` + 导出 `window.pptPages` |
-| 1064–1120 | 字幕拖拽（Pointer Events + 指针捕获） |
-| 1121–1146 | 字幕左右导航按钮（点击不触发拖拽） |
+| 6–437 | `<style>`：设计变量 `:root` + 全部样式（含缩略图三档、悬浮滚动条 `.pages-rail`、字幕上方导航 `.subtitle-navs`、干净输出 `html.is-clean`、轻提示 `#toast`） |
+| 438–446 | `<head>` 里的首帧脚本：读 `localStorage['ppt-clean']` 给 `<html>` 挂 `is-clean`（见不变量 15） |
+| 448–513 | HTML 骨架：`#slide-container`、`#page-indicator`、`#controls`、`#subtitle-container`（**初始带 `is-hidden`**；内含 `.subtitle-navs` 按钮行 + 空的 `#subtitle`）、`#toast`、`#ctx-menu`（page 组含「显示字幕」「演讲者模式」「全屏显示」；subtitle 组三档；pages 组含列数切换与 `.pages-body` 内的 `#pages-grid`、`#pages-rail`） |
+| 515 | `<script src="js/subtitle.js">`：字幕文本常量 |
+| 516–571 | 字幕行解析（用 `SUBTITLE_TEXT` 填充 DOM）、`stepSubtitle()`、空格翻句、方向键翻页、`P` 开演讲者窗口（**没有 `F` 全屏键**，见不变量 20） |
+| 572–1147 | 字幕三档显隐 + 右键菜单三上下文 + 分页缩略图面板 + 列数切换 + 悬浮滚动条 + **观众屏全屏控制**（`enterFull/exitFull/toggleFull/restoreFull`）+ `openPresenter()` + `toast()`（导出 `window.pptSubtitle`、`window.pptPresenter`） |
+| 1148 | `<script src="js/pages.js">`：分页清单常量 |
+| 1149–1326 | 缺清单兜底提示 + 幻灯片加载 + `iframe.onload` 注入（含全屏补位）+ `prev/next` + 导出 `window.pptPages` |
+| 1327–1383 | 字幕拖拽（Pointer Events + 指针捕获） |
+| 1384–1423 | 字幕左右导航按钮（点击不触发拖拽），导出 `window.pptSub` |
+| 1424–1462 | 跨窗口同步桥：监听 `storage`，把 `ppt-current` / `ppt-sub-idx` / `ppt-clean` 映射到页面动作 |
 
 两个外链的位置有硬约束：`subtitle.js` 必须在字幕解析脚本**之前**，`pages.js` 必须在 `loadSlide` 所在脚本**之前**——它们是普通 `<script>`，同步执行，顺序错了就是 `undefined`。
 
-跨模块靠两个全局对象通信，不要再开新的全局：
+跨模块靠**三个**全局对象通信，不要再开新的全局：
 - `window.pptSubtitle` → `{ onMove, openMenu, closeMenu, getMode }`
 - `window.pptPages` → `{ files, titles, current, go }`
+- `window.pptSub` → `{ show(idx, opts), index(), total() }` —— 改字幕句号的**唯一门**（`subtitleIdx` 是脚本级 `let`，别的脚本只能读不能安全地改）
+- `window.pptPresenter` → `{ open(), fullscreen(), restore() }` —— `open` 供菜单项与 `P` 键；`fullscreen` 是 `toggleFull`（**只由右键「全屏显示」点击触发**，不再绑键位）；`restore` 只给 iframe 注入用（见第五节全屏）
 - 另有三个由外链提供的全局常量：`SUBTITLE_TEXT`、`SLIDE_PAGES`、`slideFiles` / `slideTitles`
+
+### `presenter.html` 内部地图（689 行）
+
+| 行号 | 内容 |
+| --- | --- |
+| 15–287 | `<style>`：同一套 `:root` 变量 + 控制台布局（顶栏 / 舞台 / 字幕区 / 右列缩略图） |
+| 289–341 | HTML：`#bar`（页码、页名、计时器）、`.stage`、`.sub`（当前句 / 下一句 / 全文列表）、`.thumbs`、`#allPages`、`#cleanBtn` |
+| 342–343 | `<script src="js/subtitle.js">`、`js/pages.js`（与放映器共用同一份生成数据） |
+| 344–686 | 全部逻辑：`fitStage()`、`loadPage()`、`renderSub()`（含 `centerSub()` 居中当前句）、`setClean()`、计时器、键盘、`storage` 监听 |
+
+**它自己不生成任何数据、也不反向写 `js/*.js`。** 所有页与字幕都来自那两个外链文件，所以两边永远同源同步。
+
+**跨窗口同步协议（四个 localStorage 键）**：
+
+| 键 | 谁写 | 含义 |
+| --- | --- | --- |
+| `ppt-current` | 两边 | 当前页号（放映器 `loadSlide()` 本来就在写） |
+| `ppt-sub-idx` | 两边 | 当前字幕句号 |
+| `ppt-clean` | 演讲者窗口写，放映器读 | 观众屏是否「干净输出」`'1'`/`'0'` |
+| `ppt-subtitle-mode` | 只有放映器 | 字幕三档，**不同步**——它属于观众屏自己的显示偏好 |
+
+通道是 `storage` 事件（不是 `BroadcastChannel`）：它只在**别的窗口**写入时触发，同一窗口自己写不会回声；写同值也不触发事件，所以「收到通知 → 执行 → 再写回同值」这条链天然收敛。
 
 ---
 
@@ -235,12 +267,16 @@ const SUBTITLE_TEXT = "第一句\n第二句";
 | 字幕三档 | `persist-show` / `hover`（默认）/ `persist-hide`，存 `localStorage['ppt-subtitle-mode']` |
 | 字幕拖拽 | Pointer Events + `setPointerCapture`；边界 `KEEP = 48px` 至少留可见；中心锚点 `translateX(-50%)` |
 | 字幕导航按钮 | 两个 26px 按钮在字幕**正上方居中**（`.subtitle-navs` 绝对定位，`left:50%;bottom:100%;translateX(-50%)`）；不参与容器宽度——见下方「按钮为什么放上方」 |
-| 右键菜单（三上下文） | `data-context` = `page`（仅"显示字幕"）/ `subtitle`（三档，贴字幕上沿弹出）/ `pages`（缩略图网格） |
+| 右键菜单（三上下文） | `data-context` = `page`（「显示字幕」「演讲者模式」「全屏显示」）/ `subtitle`（三档，贴字幕上沿弹出）/ `pages`（缩略图网格） |
 | 页码跳转面板 | 页码 `pointer-events:none`，右键落在 iframe 里 → 用**坐标矩形命中 + 要求 `.show`** 判断；首次打开才构建缩略图 |
 | 缩略图 | 内嵌 `iframe` 指向真实分页 HTML，1280×720 渲染后按 `--thumb-scale` 缩放；三档宽度见下 |
 | 缩略图下方标签 | `.page-cap` = 序号徽标 `.page-num`（数组下标，1、2、3…）+ 页名 `.page-name`（取自文件名「序号-页名」，长名省略号截断）；序号与文件名里的编号无关 |
 | 列数切换 | 面板右上三个图标按钮 `data-cols="1\|2\|3"`，写 `.pages-grid` 的 `data-cols`；选择存 `localStorage['ppt.pagesCols']`，默认双列 |
 | 面板滚动 | 网格 `max-height:min(62vh,420px)`，超出在容器内滚动；**原生滚动条整条隐藏**，改用面板右缘**外侧**的自绘悬浮滑轨 `.pages-rail`（见下） |
+| 演讲者模式 | 页面右键菜单「演讲者模式」或按 `P` → `openPresenter()` → `window.open('presenter.html')`；已开则只 `focus()`。位置先按主屏偏移，`getScreenDetails()` 可用时再挪到副屏（Chromium + 用户授权才成立） |
+| 观众屏全屏 | 进/出全屏的唯一入口是**页面右键菜单 →「全屏显示」**（`toggleFull()`；全屏中该项 `class="active"`，再点一次退出并取消高亮）。开控制台后，观众屏的下一次点击也会自动补全屏（`restoreFull()`，iframe 内的点击在注入脚本里转给 `pptPresenter.restore()`）。**没有 `F` 快捷键**——理由见不变量 20。Chromium 下额外用 `navigator.keyboard.lock(['Escape'])` 把 Esc 从「退出全屏」手里抢过来（见下） |
+| 弹窗被拦截 | 不弹 `alert`（会阻塞渲染线程），用 `#toast` 轻提示，3.6 秒自淡出——见不变量 17 |
+| 干净输出 | `localStorage['ppt-clean']='1'` → `<head>` 里首帧就把 `is-clean` 挂到 `<html>`（不变量 15）；CSS 只压 `opacity`/`pointer-events`，`#controls` 用 `display:none` |
 
 **缩略图的尺寸耦合**：`width` 与 `scale()` 必须同步改，比值恒为 `width / 1280`。三档都已算好并写死在 `.pages-grid[data-cols]` 里（第 243–245 行）：
 
@@ -268,6 +304,23 @@ const SUBTITLE_TEXT = "第一句\n第二句";
 
 **历史坑（只在你把原生滚动条加回来时才相关）**：Chrome 只要出现 `scrollbar-width` / `scrollbar-color`，就会**整组忽略** `::-webkit-scrollbar` 定制，结果是系统细滚动条加两端小箭头。
 
+**为什么「全屏」和「开控制台」不能在同一按键里完成。** 五条都是实测出来的硬约束（真实窗口 + CDP 真按键，Chrome 125），不要试图"优化"它：
+
+1. `requestFullscreen()` 与 `window.open()` 都要**瞬时用户激活**，而一次请求就把这份激活用掉了；
+2. 先要全屏、再开窗 → `window.open()` 被判成无手势，**直接拦截**（toast 报"浏览器拦截了弹出窗口"）；
+3. 先开窗、再要全屏 → 请求落在**失去焦点**的文档上，被拒（`TypeError`）；
+4. **先全屏、再延时开窗也不行**：全屏后 400ms / 1500ms 再 `window.open` 一率被拦（`window.open` 返回 `null`），加 `--disable-popup-blocking` 也一样——`requestFullscreen` 已经把这轮瞬时激活消耗掉了；
+5. 即便全屏后隔一次真实点击再开窗，**打开新窗口会让当前窗口退出全屏**（Chromium 行为，`document.fullscreenElement` 变回 `null`）。
+
+所以流程被固定成：**先开窗（消耗这次按键）→ 观众屏的下一次点击补全屏**。`restoreFull()` 守 `pointerdown` + `keydown`（放过 `Esc`），一旦 `wantFull` 且当前不全屏就补；`wantFull` 落盘 `localStorage['ppt-fs']`，刷新后仍然记得。两个细节：
+
+- **iframe 里的点击必须转一手。** 幻灯片铺满视口，观众的第一下几乎必然落在 iframe 内，父页面的 `pointerdown` 收不到。注入脚本里 `parent.pptPresenter.restore()` 要在**同一个真实事件**里同步调用——不能用转发出去的新 `KeyboardEvent`，合成事件不带用户激活。
+- **跨窗口请求全屏无解。** 在 `presenter.html` 里调 `opener.document.documentElement.requestFullscreen()` 会 `TypeError`，别试。
+
+**为什么不给全屏配快捷键（`F` 已移除）。** 同上一条的根因：用户按 `F` 时焦点通常已经在幻灯片 iframe 里，父页面拿到的是注入脚本转发的**合成** `KeyboardEvent`，瞬时激活早已丢失 → 要么没反应、要么被浏览器拒（用户的原话是"`F` 一般会失效"）。改成**右键菜单「全屏显示」**后，每次都是父文档上的真实点击，稳定可进；退出也走同一项，选中态直接读 `document.fullscreenElement`（`refreshMenu()` 会在 `fullscreenchange` 里刷新）。
+
+`navigator.keyboard.lock(['Escape'])` 是"持久全屏"的最后一块：它让 Esc 只关右键菜单、不再退出全屏（按住 Esc 约 2 秒仍能强退，浏览器保留的后门）。Firefox / Safari 没有这个 API，退出全屏只能走右键菜单（或在浏览器 UI 里退出）。
+
 ---
 
 ## 七、不可破坏的不变量
@@ -288,6 +341,12 @@ const SUBTITLE_TEXT = "第一句\n第二句";
 12. **悬浮滚动条必须留在面板外面，且不能用半透明白。** `.pages-rail` 靠 `right:-16px` 探出面板；挪进 `.pages-grid` 里就又退回"占 9px 宽度、把网格挤偏"的内嵌滚动条，`syncRail()` 的整套比例也一起错。面板外是白底幻灯片，白色滑块等于隐形——只用中性灰 + 描边。
 13. **字幕容器的 `is-hidden` 必须写死在 HTML 里。** 默认档 `hover` 与 `persist-hide` 都要求首帧就不显示；如果等脚本 `applyMode()` 再补这个类，从 HTML 解析完成到脚本执行之间会渲染一帧字幕条，刷新时就是「闪一下就没了」。`applyMode()` 只负责运行期的三档切换（`persist-show` 会把它移除）。
 14. **不要给 `index.html` 引入外部依赖之外再加"构建期写回 `index.html`"。** 构建脚本对 `index.html` 必须零写入——这是第二节"关键收益"的前提，破了它整份数据分离方案就白做了。
+15. **`is-clean` 必须挂在 `<html>` 上、由 `<head>` 里的脚本在解析 `<body>` 之前挂好。** 挂在 `<body>` 上等末尾脚本加，刷新时会先画一帧字幕条/页码（与不变量 13 同一类错误）。这也是唯一允许在 `<head>` 里读 `localStorage` 的地方；别把它推广到字幕三档——三档的"默认态"要能被后续脚本反向覆盖，而干净输出本来就是运行时开关，不存在这个问题。
+16. **跨窗口同步只走 `storage` 事件，并且只写「状态键」不写「命令」。** 不要退回 `window.opener` 直连：那样演讲者窗口一刷新就成孤儿、用户手动开第二个标签也控制不了。也不要同时维护 `BroadcastChannel` 第二通道——两条路径对不上时极难排查。
+17. **不要用 `alert()` / `confirm()` / `prompt()`。** 它们会阻塞渲染线程直到用户点掉，放映途中弹出来等于把画面卡死；连无头自动化测试都会挂住。要提示就用 `#toast`。
+18. **全屏只在观众屏自己的手势里请求，且开窗与全屏永远分两步。** 见第五节末尾那四条实测约束：`requestFullscreen` 与 `window.open` 抢同一份用户激活，而"开新窗口"必然让当前窗口退出全屏。别为了"一步到位"把 `enterFull()` 挪到 `window.open()` 前面，那会让弹窗被浏览器拦掉。
+19. **演讲者窗口里当前句必须**在列表中线**并被特殊标记，不能只改底色。** 用户要的是"抬眼一瞬定位"：`centerSub()` 把当前行滚到列表垂直中间（`offsetFromCenter` 实测 ±0.3px），`.sub-list li.on` 给左侧 3px 主色竖条 + 淡蓝渐变底 + 内描边 + 加粗。别再退回 `scrollIntoView({block:'nearest'})`——它只在出界时动，视线仍要自己找。
+20. **不要给全屏再绑键盘快捷键（`F` 已因此移除）。** 幻灯片 iframe 铺满视口，按键几乎都落在 iframe 里，父页面收到的是转发出来的合成 `KeyboardEvent`，瞬时激活早丢了 → `requestFullscreen` 必被拒（用户反馈的「`F` 一般失灵」就是这个）。全屏唯一入口是**右键菜单「全屏显示」**：真实点击必带激活，菜单项选中态直接读 `document.fullscreenElement`。
 
 ---
 
@@ -340,6 +399,12 @@ const SUBTITLE_TEXT = "第一句\n第二句";
 | 调面板滚动条样式 | 改 `.pages-rail` / `.pages-rail-thumb` 的宽度、颜色、圆角、悬停变粗幅度；滑块最小长度在 `syncRail()` 里（现为 26px）。别再往 `.pages-grid` 上加滚动条属性 |
 | 让滑轨离面板更远 / 更近 | 只改 `.pages-rail` 的 `right`（现值 `-16px` ＝ padding 6 + 边框 1 + 间距 5）；同时确认 `positionMenu()` 的 `padRight` 还够用 |
 | 加一档字幕模式 | `MODES` 数组 + `applyMode()` 分支 + 菜单项，三处都要动 |
+| 改演讲者窗口的布局 | `presenter.html` 的 `<style>`：`main` 两列宽度、`.col-main` 两行比例（行高实际由 `fitStage()` 写成 px）、`.sub` 内部结构 |
+| 改演讲者窗口的舞台尺寸 | `fitStage()` 里三个上限（撑满列宽 / `colH * 0.66` / 给字幕留 `MIN_SUB`），以及 `MIN_SUB` 本身 |
+| 调字幕列表滚动条 | `presenter.html` 里的 `.sub-list::-webkit-scrollbar*`；**别在这里加 `scrollbar-width` 以外的标准属性到 Chrome 会认的地方** |
+| 调当前句居中/高亮 | `presenter.html` 的 `centerSub()`（改成贴边/留 1/3 就改这里的 `delta`）+ `.sub-list li.on` 与 `li.on::before`（竖条宽高、渐变、描边） |
+| 改全屏行为（自动进 / 菜单项 / 锁 Esc） | `index.html` 的 `enterFull()` / `exitFull()` / `toggleFull()` / `restoreFull()` / `lockEsc()`；入口是 page 组菜单项 `data-action="fullscreen"` 与 `window.pptPresenter.fullscreen`。**不要往 `keydown` 里加全屏键**（见不变量 20） |
+| 同步新状态（比如「观众屏静音」「当前计时」） | 三处：写键的地方、`index.html` 末尾同步桥的 `storage` 分支、`presenter.html` 的 `storage` 分支 |
 
 ---
 
@@ -350,6 +415,11 @@ const SUBTITLE_TEXT = "第一句\n第二句";
 3. **缩略图首次打开面板时才构建**，会看到短暂空白；换来的是进页面时不加载全部分页。
 4. **页码 `pointer-events:none` 是必须的**——它若可交互，会挡住靠近判定并在显示后自己压住鼠标，重演闪烁死循环。
 5. **字幕隐藏后按空格翻句没有任何视觉反馈**，这是用户明确要求的（翻句与显隐完全解耦）。
+6. **演讲者窗口能否自动上副屏，取决于浏览器。** `getScreenDetails()` 只有 Chromium 有，且要用户授权；Firefox 与部分 Linux 环境下拿不到，只能弹出后由用户手动拖到扩展屏。**不要**为了这个去引第三方库或要求 HTTPS。
+7. **`file://` 下演讲者窗口可能与主窗口不同步。** `localStorage` 在部分浏览器的 `file://` 下按文件隔离，两个页面各存各的。要同步就必须走 `serve.py`（本来 Chrome 下也非走不可）。
+8. **演讲者窗口里的全部页缩略图会一次性建 N 个 iframe。** 页数很多时打开会顿一下，这是拿"即开即用"换的；不改成按需构建，是因为控制台一打开就要能跳页。
+9. **「按一次 P 就同时全屏 + 开控制台」做不到，"先全屏再延时开窗"也一样做不到。** 实测：全屏后延时 400ms / 1500ms 调 `window.open` 一律被拦（返回 `null`，加 `--disable-popup-blocking` 无效），因为 `requestFullscreen` 已经把这一轮瞬时激活消耗掉；而且开新窗口必定让当前窗口退出全屏。现在退一步：P 开窗 + 提示一句，观众屏的**下一次点击**补全屏（`restoreFull()`）。第二次起（控制台已开）按 `P` 就是一键全屏。这不是没做完，是平台限制。
+10. **只有 Chromium 能锁 Esc。** `navigator.keyboard.lock(['Escape'])` 让 Esc 不再退出全屏（仍可长按 2 秒强退）；Firefox / Safari 没有这个 API，退出全屏只能走右键菜单或浏览器 UI。全屏状态还受浏览器"窗口切换/系统抢占"影响，掉出来时点一下画面（`restoreFull()`）或右键「全屏显示」即可恢复。
 
 ---
 
