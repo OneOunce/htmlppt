@@ -1,0 +1,1148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>演示文档</title>
+  <style>
+    /* ===== 统一设计变量（玻璃拟态深色） ===== */
+    :root{
+      --c-glass: rgba(18,20,26,0.5);
+      --c-glass-hover: rgba(18,20,26,0.82);
+      --c-glass-disabled: rgba(18,20,26,0.28);
+      --c-border: rgba(255,255,255,0.16);
+      --c-text: #eef1f6;
+      --c-accent: rgba(120,170,255,0.9);
+      --blur: 12px;
+      --radius-card: 12px;
+      --btn: 48px;
+      --edge: 24px; /* 边缘统一间距：翻页按钮左右、页码顶部、字幕底部都用它 */
+      --ease: .22s cubic-bezier(.2,.7,.3,1);
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    /* 让页面像 PPT 一样占满窗口 */
+    html, body{
+      margin:0;padding:0;height:100%;width:100%;overflow:hidden;font-family:var(--font);
+      background:#0f1115;
+    }
+    #slide-container{
+      width:100%;height:100%;position:relative;background:#fff;
+      display:flex;justify-content:center;align-items:center;
+    }
+    #slide-container > .slide{
+      width:100%;height:100%;overflow:auto;
+    }
+    /* ===== 通用玻璃按钮：分页按钮 / 字幕导航按钮共用同一视觉语言 ===== */
+    .nav-btn{
+      appearance:none;
+      width:var(--btn);height:var(--btn);
+      padding:0;border:1px solid var(--c-border);
+      background:var(--c-glass-hover);
+      color:var(--c-text);
+      border-radius:var(--radius-card);
+      display:inline-flex;align-items:center;justify-content:center;
+      cursor:pointer;
+      backdrop-filter:blur(var(--blur));
+      -webkit-backdrop-filter:blur(var(--blur));
+      -webkit-tap-highlight-color:transparent;
+      transition:opacity var(--ease), transform var(--ease),
+                 background var(--ease), border-color var(--ease);
+    }
+    .nav-btn svg{ width:24px;height:24px;display:block; }
+    .nav-btn:hover{ background:var(--c-glass-hover); transform:scale(1.06); }
+    .nav-btn:active{ transform:scale(.94); }
+    .nav-btn:focus-visible{
+      outline:none;
+      border-color:var(--c-accent);
+    }
+    .nav-btn:disabled{
+      opacity:.3;cursor:default;
+      background:var(--c-glass-disabled);
+    }
+    /* 分页切换按钮 */
+    #controls{
+      position:absolute;top:50%;left:0;right:0;
+      transform:translateY(-50%);display:flex;justify-content:space-between;
+      padding:0 var(--edge);pointer-events:none;
+    }
+    #controls .nav-btn{
+      pointer-events:none;
+      opacity:0;transform:scale(.85);
+    }
+    #controls.show .nav-btn{ opacity:1;transform:scale(1);pointer-events:auto; }
+    #controls.show .nav-btn:disabled{ opacity:.3; }
+    /* 页码指示（与按钮共用同一玻璃语言） */
+    #page-indicator{
+      position:absolute;top:var(--edge);left:50%;
+      transform:translateX(-50%) translateY(-10px);
+      padding:6px 14px;
+      border:1px solid var(--c-border);
+      background:var(--c-glass-hover);
+      color:var(--c-text);
+      font-size:.85rem;letter-spacing:.06em;
+      border-radius:var(--radius-card);
+      backdrop-filter:blur(var(--blur));
+      -webkit-backdrop-filter:blur(var(--blur));
+      opacity:0;pointer-events:none;
+      font-variant-numeric:tabular-nums;
+      transition:opacity var(--ease), transform var(--ease);
+    }
+    #page-indicator.show{
+      opacity:1;transform:translateX(-50%) translateY(0);
+    }
+    #subtitle-container{
+      position:absolute;
+      bottom:var(--edge);
+      left:50%;
+      transform:translateX(-50%);
+      cursor:move;
+      z-index:9999;
+      user-select:none;
+      touch-action:none;
+      /* 容器宽度只由字幕本身决定；导航按钮已改为绝对定位到上方（见 .subtitle-navs），
+         不再参与宽度计算，切换长短字幕时按钮位置不再左右乱跑 */
+      display:flex;
+      align-items:center;
+      /* 只过渡不透明度：transform 被拖拽脚本内联占用，切不可在此改 transform，
+         否则拖动后内联 transform 会覆盖类的 transform 使隐藏位移动画失效 */
+      transition:opacity var(--ease);
+    }
+    /* 隐藏态：只改 opacity + 切断指针事件。
+       不设 pointer-events:none 的话，看不见的容器仍会响应 :hover（导航按钮误显），
+       也会挡住幻灯片底部的文字选区。 */
+    #subtitle-container.is-hidden{
+      opacity:0;
+      pointer-events:none;
+    }
+    /* ===== 右键面板：字幕显示方式（与其它控件同一玻璃语言） ===== */
+    #ctx-menu{
+      position:absolute;
+      z-index:10000;               /* 高于字幕容器(9999) */
+      min-width:156px;
+      padding:6px;
+      display:flex;flex-direction:column;gap:2px;
+      background:var(--c-glass-hover);
+      border:1px solid var(--c-border);
+      border-radius:var(--radius-card);
+      backdrop-filter:blur(var(--blur));
+      -webkit-backdrop-filter:blur(var(--blur));
+      color:var(--c-text);
+      font-family:var(--font);
+      opacity:0;transform:scale(.96);
+      transform-origin:top left;
+      pointer-events:none;
+      transition:opacity .16s ease, transform .16s ease;
+    }
+    #ctx-menu.show{ opacity:1;transform:scale(1);pointer-events:auto; }
+    /* 两组菜单按右键位置切换，视觉完全同一套 */
+    #ctx-menu .ctx-group{ display:none;flex-direction:column;gap:2px; }
+    #ctx-menu[data-context="page"] .ctx-group[data-group="page"]{ display:flex; }
+    #ctx-menu[data-context="subtitle"] .ctx-group[data-group="subtitle"]{ display:flex; }
+    #ctx-menu[data-context="pages"] .ctx-group[data-group="pages"]{ display:flex; }
+    .ctx-title{
+      padding:4px 10px 6px;
+      font-size:.7rem;letter-spacing:.08em;
+      opacity:.55;
+    }
+    .ctx-item{
+      appearance:none;
+      display:flex;align-items:center;gap:8px;
+      padding:7px 10px;
+      border:1px solid transparent;border-radius:8px;
+      background:transparent;color:inherit;
+      font:inherit;font-size:.85rem;
+      text-align:left;cursor:pointer;
+      transition:background var(--ease), border-color var(--ease);
+    }
+    /* 选中态沿用控件的「背景变亮 + 圆点」，不用高饱和描边，保持与其它控件同一语言 */
+    .ctx-item.active{ background:rgba(255,255,255,.05); }
+    .ctx-item:hover{ background:rgba(255,255,255,.09); }
+    .ctx-item.active:hover{ background:rgba(255,255,255,.12); }
+    .ctx-item:focus-visible{ outline:none;border-color:var(--c-accent); }
+    .ctx-item .dot{
+      width:6px;height:6px;border-radius:50%;
+      background:var(--c-accent);opacity:0;flex:0 0 auto;
+    }
+    .ctx-item.active .dot{ opacity:1; }
+    /* ===== 页码右键：分页跳转面板（序号 + 分页 HTML 实时缩略图） =====
+       缩略图不是截图，而是把分页 HTML 装进一个 1280×720 的 iframe 后等比缩小，
+       所以永远是当前分页的真实渲染结果，不占额外图片资源。 */
+    #ctx-menu[data-context="pages"]{ padding:6px 6px 4px; transform-origin:top center; }
+    /* 面板头部：左标题 + 右列数切换（1 / 2 / 3 列） */
+    .pages-head{
+      display:flex;align-items:center;justify-content:space-between;
+      gap:10px;
+      padding:2px 2px 6px 8px;
+    }
+    .pages-head .ctx-title{ padding:0; }
+    .pages-cols{
+      display:flex;align-items:center;gap:1px;
+      padding:2px;
+      border-radius:8px;
+      background:rgba(255,255,255,.05);
+    }
+    .pages-cols button{
+      appearance:none;position:relative;
+      display:grid;place-items:center;
+      width:26px;height:22px;
+      padding:0;border:0;border-radius:6px;
+      background:transparent;
+      color:var(--c-text);opacity:.45;
+      cursor:pointer;
+      transition:opacity var(--ease), background var(--ease);
+    }
+    .pages-cols button:hover{ opacity:.85;background:rgba(255,255,255,.08); }
+    .pages-cols button:focus-visible{ outline:none;box-shadow:inset 0 0 0 1px var(--c-accent); }
+    .pages-cols button[aria-pressed="true"]{ opacity:1;background:rgba(255,255,255,.13); }
+    .pages-cols svg{ width:15px;height:15px;display:block; }
+    /* 悬停提示：自绘气泡，不用原生 title —— 原生样式与面板的深色玻璃语言不搭，且延迟不可控 */
+    .pages-cols button::after{
+      content:attr(data-tip);
+      position:absolute;top:calc(100% + 7px);left:50%;
+      padding:3px 8px;
+      border-radius:6px;
+      background:rgba(8,10,14,.94);
+      border:1px solid var(--c-border);
+      color:var(--c-text);
+      font-size:.66rem;line-height:1.5;white-space:nowrap;
+      opacity:0;pointer-events:none;
+      transform:translate(-50%,2px);
+      transition:opacity .14s ease, transform .14s ease;
+      z-index:2;
+    }
+    .pages-cols button:hover::after,
+    .pages-cols button:focus-visible::after{ opacity:1;transform:translate(-50%,0); }
+    /* 最右一个向右对齐，避免贴着屏幕右边缘时气泡被截 */
+    .pages-cols button:last-child::after{ left:auto;right:0;transform:translate(0,2px); }
+    .pages-cols button:last-child:hover::after,
+    .pages-cols button:last-child:focus-visible::after{ transform:translate(0,0); }
+    /* 列数切换：三种档位的缩略图宽度与 iframe 缩放比一一对应，
+       三档的网格总宽刻意保持一致（≈302px），切换时面板不跳宽度。
+       302/1280=.2359375、148/1280=.115625、96/1280=.075 —— 换算写死在这里，改宽度必须同步改缩放。 */
+    .pages-body{ position:relative; }
+    .pages-grid{
+      --cols:2;
+      --thumb-w:148px;
+      --thumb-scale:.115625;
+      display:grid;
+      grid-template-columns:repeat(var(--cols), var(--thumb-w));
+      justify-content:center;
+      gap:6px;
+      max-height:min(62vh, 420px);
+      overflow-y:auto;
+      overflow-x:hidden;
+      padding:0 2px 6px;
+      overscroll-behavior:contain;
+      /* 原生滚动条整条隐藏：宽度归零、也不吃网格宽度，
+         由面板右缘外侧那条自绘滑轨 .pages-rail 接管滚动指示与拖动。
+         注：Chrome 一旦认了 scrollbar-width 就会忽略 ::-webkit-scrollbar 定制，
+         这里两边都要写 none，才能在各引擎里都干净地不出现。 */
+      scrollbar-width:none;
+      -ms-overflow-style:none;
+    }
+    .pages-grid::-webkit-scrollbar{ width:0; height:0; display:none; }
+    .pages-grid[data-cols="1"]{ --cols:1; --thumb-w:302px; --thumb-scale:.2359375; }
+    .pages-grid[data-cols="2"]{ --cols:2; --thumb-w:148px; --thumb-scale:.115625; }
+    .pages-grid[data-cols="3"]{ --cols:3; --thumb-w:96px;  --thumb-scale:.075; }
+    /* ===== 悬浮滚动条：探在面板右缘之外的一条细滑轨 =====
+       只有内容真的溢出（.pages-body 带 has-scroll）才出现；
+       静止时低调，网格悬停 / 滚动中 / 拖动时提亮并微微胀到 6px，像 macOS 的覆盖式浮条。
+       位置与滑块长度全由 JS 按 clientHeight/scrollHeight 换算（见 syncRail）。 */
+    .pages-rail{
+      position:absolute;
+      top:0;bottom:6px;right:-16px;     /* 面板 padding 6px + 边框 1px，再往外 5px，视觉上真正脱离面板 */
+      width:4px;
+      border-radius:999px;
+      opacity:0;
+      pointer-events:none;
+      transition:opacity .18s ease;
+      cursor:pointer;
+      touch-action:none;
+    }
+    .pages-body.has-scroll .pages-rail{ opacity:1;pointer-events:auto; }
+    .pages-rail-thumb{
+      position:absolute;left:0;top:0;
+      width:100%;height:40px;           /* 初值，实际由 JS 按比例写 */
+      border-radius:999px;
+      /* 滑轨落在面板「外面」，背后是幻灯片（多半是白底）——
+         所以不能用半透明白，会直接隐形。用中性灰 + 极淡描边，
+         白底上是灰条、深底上靠描边勾出轮廓，两种背景都能看见。 */
+      background:rgba(110,122,140,.45);
+      box-shadow:0 0 0 1px rgba(255,255,255,.22), 0 1px 4px rgba(0,0,0,.16);
+      transition:background .16s ease, width .16s ease, left .16s ease;
+    }
+    .pages-body.has-scroll:hover .pages-rail-thumb,
+    .pages-rail.is-active .pages-rail-thumb,
+    .pages-rail.is-drag .pages-rail-thumb{
+      width:6px;left:-1px;
+      background:rgba(110,122,140,.72);
+    }
+    .pages-rail.is-drag .pages-rail-thumb{ background:rgba(110,122,140,.85); }
+    .page-item{
+      appearance:none;
+      /* 列布局：缩略图在上，「序号 + 页名」在下，保证两张卡的文字基线对齐 */
+      display:flex;flex-direction:column;align-items:flex-start;
+      padding:0;border:0;background:transparent;
+      color:inherit;font:inherit;text-align:left;
+      cursor:pointer;
+      border-radius:8px;
+    }
+    .page-thumb{
+      position:relative;display:block;
+      width:var(--thumb-w);aspect-ratio:16/9;
+      overflow:hidden;
+      border:1px solid var(--c-border);
+      border-radius:8px;
+      background:#fff;
+      transition:border-color var(--ease), background var(--ease);
+    }
+    /* 缩放比跟列数档位一起变（见 .pages-grid 的 --thumb-scale）：
+       宽 / 1280，视觉尺寸与 aspect-ratio 严格对应，不产生半像素缝 */
+    .page-thumb iframe{
+      position:absolute;top:0;left:0;
+      width:1280px;height:720px;
+      border:0;
+      transform-origin:0 0;
+      transform:scale(var(--thumb-scale));
+      pointer-events:none;
+    }
+    /* 缩略图下方一行：序号徽标 + 页名。页名超长省略，绝不撑破两列网格。 */
+    .page-cap{
+      display:flex;align-items:center;gap:5px;
+      width:100%;min-width:0;
+      margin-top:4px;padding:0 1px;
+      font-size:.7rem;line-height:1.25;
+    }
+    .page-num{
+      flex:0 0 auto;
+      min-width:16px;height:16px;padding:0 5px;
+      border-radius:5px;
+      background:rgba(255,255,255,.14);
+      color:var(--c-text);
+      font-size:.68rem;line-height:16px;text-align:center;
+      font-variant-numeric:tabular-nums;
+      transition:background var(--ease), color var(--ease);
+    }
+    .page-name{
+      flex:1 1 auto;min-width:0;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+      color:var(--c-text);opacity:.72;
+    }
+    .page-item:hover .page-thumb{ border-color:rgba(255,255,255,.28); }
+    .page-item:focus-visible{ outline:none; }
+    .page-item:focus-visible .page-thumb{ border-color:var(--c-accent); }
+    .page-item.active .page-thumb{ border-color:var(--c-accent); }
+    .page-item.active .page-num{ background:var(--c-accent); color:#0a0e15; }
+    /* 三列档位卡片只有 96px 宽：标签整体压小一档，否则序号和页名会挤成一团 */
+    .pages-grid[data-cols="3"] .page-cap{ gap:3px; font-size:.62rem; }
+    .pages-grid[data-cols="3"] .page-num{
+      min-width:13px;height:14px;padding:0 3px;
+      border-radius:4px;font-size:.58rem;line-height:14px;
+    }
+    #subtitle{
+      background:var(--c-glass-hover);
+      color:var(--c-text);
+      border:1px solid var(--c-border);
+      padding:8px 16px;
+      border-radius:var(--radius-card);
+      max-width:80vw;
+      white-space:pre-wrap;
+      text-align:center;
+      font-family:var(--font);
+      font-size:1.05rem;
+      line-height:1.45;
+      backdrop-filter:blur(var(--blur));
+      -webkit-backdrop-filter:blur(var(--blur));
+    }
+    /* ===== 字幕导航按钮：字幕正上方居中、左右对称的一对 =====
+       放在上方而不是两侧，是因为字幕条宽度随文本长短变化——夹在两侧时按钮会被推着左右跑，
+       每次切句都得重新找位置。绝对定位 + 居中后，无论字幕多宽，按钮恒在中轴上方。
+       padding-bottom 是 hover 的「桥」：它让按钮行一直延伸贴住字幕上沿，
+       鼠标从字幕往上移不会掉出容器（掉了就会触发淡出，按钮直接点不到）。 */
+    .subtitle-navs{
+      position:absolute;
+      left:50%;bottom:100%;
+      transform:translateX(-50%);
+      display:flex;align-items:center;gap:8px;
+      padding-bottom:8px;
+    }
+    /* 字幕导航按钮：复用 .nav-btn 视觉，仅保留 hover 显隐逻辑 */
+    .subtitle-nav{
+      flex:0 0 auto;
+      width:26px;height:26px;
+      border-radius:8px;          /* 小尺寸下 12px 会太圆，单独压到 8px */
+      opacity:0;
+      visibility:hidden;
+      pointer-events:none;
+      transform:scale(.85);
+      /* visibility 延迟到 opacity 淡出后再隐藏，保证淡出动画完整 */
+      transition:opacity .2s ease, transform .2s ease, background var(--ease),
+                 border-color var(--ease), visibility 0s linear .2s;
+    }
+    #subtitle-container:hover .subtitle-nav{
+      opacity:1;
+      visibility:visible;
+      pointer-events:auto;
+      transform:scale(1);
+      /* hover 时立即取消 visibility 延迟，保证淡入即时可见 */
+      transition:opacity .2s ease, transform .2s ease, background var(--ease),
+                 border-color var(--ease), visibility 0s;
+    }
+    .subtitle-nav:hover{ background:var(--c-glass-hover); }
+    .subtitle-nav:active{ transform:scale(.92); }
+    /* 已到首/末句：hover 时仅以淡态提示不可用，不抢占视觉 */
+    #subtitle-container:hover .subtitle-nav:disabled{
+      opacity:.35;
+      visibility:visible;
+      pointer-events:none;
+      background:var(--c-glass-disabled);
+      cursor:default;
+    }
+  </style>
+</head>
+<body>
+  <div id="slide-container"></div>
+  <div id="page-indicator">1 / 1</div>
+  <div id="controls">
+    <button id="prevBtn" class="nav-btn" aria-label="上一页" title="上一页（← / ↑）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <button id="nextBtn" class="nav-btn" aria-label="下一页" title="下一页（→ / ↓）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+  </div>
+  <!-- 初始就带 is-hidden：字幕默认不显示，必须由 HTML 直接给出，
+       不能等脚本执行 applyMode() 再加——那样解析完到脚本执行之间会渲染一帧空字幕块，
+       刷新时表现为「字幕闪一下就没了」。 -->
+  <div id="subtitle-container" class="is-hidden">
+    <!-- 导航按钮在字幕上方居中：不随字幕宽窄移动，切句时位置恒定 -->
+    <div class="subtitle-navs">
+      <button class="subtitle-nav nav-btn prev" type="button" aria-label="上一条字幕" title="上一条字幕"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M15 18l-6-6 6-6"/></svg></button>
+      <button class="subtitle-nav nav-btn next" type="button" aria-label="下一条字幕" title="下一条字幕"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M9 6l6 6-6 6"/></svg></button>
+    </div>
+    <div id="subtitle"></div>
+  </div>
+  <!-- 右键面板：分两种上下文，同一套视觉。
+       page     ：在幻灯片空白处右键，只放「显示字幕」，后续功能继续往里加；
+       subtitle ：在可见的字幕条上右键，才出现三档显示方式。 -->
+  <div id="ctx-menu" role="menu" aria-label="右键菜单" aria-hidden="true" data-context="page">
+    <div class="ctx-group" data-group="page">
+      <button class="ctx-item" type="button" role="menuitem" aria-checked="false" data-action="show-subtitle"><span class="dot"></span>显示字幕</button>
+    </div>
+    <div class="ctx-group" data-group="subtitle">
+      <div class="ctx-title">字幕显示</div>
+      <button class="ctx-item" type="button" role="menuitemradio" aria-checked="false" data-mode="persist-show"><span class="dot"></span>持久显示</button>
+      <button class="ctx-item" type="button" role="menuitemradio" aria-checked="false" data-mode="hover"><span class="dot"></span>悬停显示</button>
+      <button class="ctx-item" type="button" role="menuitemradio" aria-checked="false" data-mode="persist-hide"><span class="dot"></span>持久隐藏</button>
+    </div>
+    <div class="ctx-group" data-group="pages">
+      <div class="pages-head">
+        <div class="ctx-title">跳转到页面</div>
+        <!-- 列数切换：图形即语义（1/2/3 条竖块），悬停出气泡提示 -->
+        <div class="pages-cols" role="group" aria-label="缩略图排列方式">
+          <button type="button" data-cols="1" aria-pressed="false"
+                  aria-label="单列展示" data-tip="单列展示">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2"/></svg>
+          </button>
+          <button type="button" data-cols="2" aria-pressed="true"
+                  aria-label="双列展示" data-tip="双列展示">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2" y="3" width="5.2" height="10" rx="1.6"/><rect x="8.8" y="3" width="5.2" height="10" rx="1.6"/></svg>
+          </button>
+          <button type="button" data-cols="3" aria-pressed="false"
+                  aria-label="三列展示" data-tip="三列展示">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2" y="3" width="3.2" height="10" rx="1.2"/><rect x="6.4" y="3" width="3.2" height="10" rx="1.2"/><rect x="10.8" y="3" width="3.2" height="10" rx="1.2"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="pages-body">
+        <div class="pages-grid" id="pages-grid" data-cols="2"></div>
+        <!-- 悬浮滚动条：不占网格宽度，探在面板右缘外侧（见 .pages-rail） -->
+        <div class="pages-rail" id="pages-rail" aria-hidden="true"><div class="pages-rail-thumb"></div></div>
+      </div>
+    </div>
+  </div>
+  <script src="js/subtitle.js"></script>
+  <script>
+    // --- 字幕处理与键盘事件转发 ---------------------------------
+    const subtitleElement = document.getElementById('subtitle');
+    // 字幕文本来自 js/subtitle.js（构建脚本整份生成）；
+    // 文件缺失时 SUBTITLE_TEXT 未定义，退回 index.html 里原有的内容。
+    if (typeof SUBTITLE_TEXT === 'string' && SUBTITLE_TEXT) {
+      subtitleElement.textContent = SUBTITLE_TEXT;
+    }
+    const subtitleLines = subtitleElement.innerText.split('\n').filter(Boolean);
+    let subtitleIdx = 0;
+    let spaceTimeout = null;
+    const threshold = 300; // ms
+
+    subtitleElement.innerText = subtitleLines[subtitleIdx] || '';
+
+    document.addEventListener('keydown', e => {
+      // 注意：转发事件（iframe → 父页面）带 detail 标记，但 KeyboardEvent.detail 是
+      // 只读属性、赋值会被静默忽略，因此无法靠它去重；好在事件跨 document 派发本就不会
+      // 重复触发父页面的监听器，无需过滤。这里直接处理即可。
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        const now = Date.now();
+        if (spaceTimeout) {
+          // 双击：跳转到上一句
+          clearTimeout(spaceTimeout);
+          spaceTimeout = null;
+          subtitleIdx = Math.max(0, subtitleIdx - 1);
+          subtitleElement.innerText = subtitleLines[subtitleIdx];
+        } else {
+          // 单击：等待阈值后跳转到下一句
+          spaceTimeout = setTimeout(() => {
+            subtitleIdx = Math.min(subtitleLines.length - 1, subtitleIdx + 1);
+            subtitleElement.innerText = subtitleLines[subtitleIdx];
+            spaceTimeout = null;
+          }, threshold);
+        }
+      } else if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prev();
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next();
+      }
+    });
+  </script>
+  <script>
+    // ---- 字幕显示方式：持久显示 / 悬停显示 / 持久隐藏 ------------------
+    //   persist-show  常显，完全忽略鼠标
+    //   hover         默认隐藏，鼠标靠近字幕当前位置的热区才浮现，移开淡出（默认档）
+    //   persist-hide  始终隐藏，鼠标靠近也不显示（避免误触）
+    // 悬停判定必须挂在 iframe 内的 mousemove 上：幻灯片 iframe 铺满视口，
+    // 鼠标在幻灯片上移动时父页面的 mousemove 不会触发（同键盘转发的约束）。
+    (function(){
+      const container = document.getElementById('subtitle-container');
+      const menu = document.getElementById('ctx-menu');
+      if (!container || !menu) return;
+
+      const STORE_KEY = 'ppt-subtitle-mode';
+      const MODES = ['persist-show', 'hover', 'persist-hide'];
+      const ENTER = 70, EXIT = 160;   // 到字幕容器的距离，进出用不同半径形成迟滞，防闪烁
+
+      let mode = localStorage.getItem(STORE_KEY) || 'hover';
+      if (MODES.indexOf(mode) < 0) mode = 'hover';   // 脏数据兜底
+      let nearShown = false;      // 悬停档当前是否因靠近而显示
+      let menuOpen = false;
+
+      function setVisible(v){ container.classList.toggle('is-hidden', !v); }
+
+      // keepVisible：切到悬停档时保留当前可见状态，由下一次鼠标移动接管。
+      // 否则用户刚在字幕上右键选完「悬停显示」，字幕会立刻消失再随鼠标冒出，观感很跳。
+      function applyMode(opts){
+        opts = opts || {};
+        container.dataset.mode = mode;
+        localStorage.setItem(STORE_KEY, mode);
+        if (mode === 'persist-show') {
+          setVisible(true);
+          nearShown = true;
+        } else if (mode === 'persist-hide') {
+          setVisible(false);
+          nearShown = false;
+        } else if (!opts.keepVisible) {
+          setVisible(false);
+          nearShown = false;
+        }
+        refreshMenu();
+      }
+
+      // 点到矩形的最短距离（与页码同一套判定，矩形内部为 0）
+      function distToRect(x, y, r){
+        const dx = Math.max(r.left - x, 0, x - r.right);
+        const dy = Math.max(r.top - y, 0, y - r.bottom);
+        return Math.hypot(dx, dy);
+      }
+
+      // 由 iframe 内的 mousemove 调用；容器隐藏时仍有布局矩形，可直接取位置判定
+      function onMove(x, y){
+        if (mode !== 'hover') return;         // 另外两档不受鼠标影响
+        const d = distToRect(x, y, container.getBoundingClientRect());
+        nearShown = nearShown ? d < EXIT : d < ENTER;
+        setVisible(nearShown);
+      }
+
+      // 两组菜单共用同一套项样式；各自标记当前状态
+      //   data-mode  ：三档之一，命中当前档时高亮
+      //   show-subtitle：页面菜单里的「显示字幕」，当前已是持久显示时高亮
+      function refreshMenu(){
+        const items = menu.querySelectorAll('.ctx-item');
+        for (let i = 0; i < items.length; i++) {
+          const btn = items[i];
+          let active = false;
+          if (btn.dataset.mode) active = (btn.dataset.mode === mode);
+          else if (btn.dataset.action === 'show-subtitle') active = (mode === 'persist-show');
+          btn.classList.toggle('active', active);
+          btn.setAttribute('aria-checked', active ? 'true' : 'false');
+        }
+
+        // 分页跳转面板：高亮当前页
+        const cur = window.pptPages ? window.pptPages.current() : 0;
+        const tiles = menu.querySelectorAll('.page-item');
+        for (let j = 0; j < tiles.length; j++) {
+          tiles[j].classList.toggle('active', Number(tiles[j].dataset.index) === cur);
+        }
+      }
+
+      // ---- 分页跳转面板：序号 + 分页 HTML 实时缩略图 ----
+      const pagesGrid = document.getElementById('pages-grid');
+      let pagesBuilt = false;
+
+      // ---- 悬浮滚动条（面板右缘外侧） ----
+      // 原生滚动条已被 CSS 隐藏，这里把 scrollTop 映射到自绘滑轨上：
+      // 高度按 clientHeight/scrollHeight 等比，支持拖动滑块、点空白轨跳转、滑轨上滚轮。
+      const pagesBody = pagesGrid ? pagesGrid.parentNode : null;
+      const pagesRail = document.getElementById('pages-rail');
+      const railThumb = pagesRail ? pagesRail.querySelector('.pages-rail-thumb') : null;
+      let railDrag = null;          // { startY, startTop } 一次拖动会话
+      let railGlowTimer = null;
+
+      function syncRail(){
+        if (!pagesGrid || !pagesRail || !railThumb || !pagesBody) return;
+        const view  = pagesGrid.clientHeight;
+        const total = pagesGrid.scrollHeight;
+        // 面板未展开（clientHeight 为 0）或内容没溢出：整条滑轨收起，不占视觉
+        if (view <= 0 || total <= view + 1) {
+          pagesBody.classList.remove('has-scroll');
+          return;
+        }
+        pagesBody.classList.add('has-scroll');
+        const track   = pagesRail.clientHeight || view;
+        const thumbH  = Math.max(26, Math.round(track * view / total));
+        const maxTop  = Math.max(1, track - thumbH);
+        const maxScroll = total - view;
+        const top = maxScroll > 0 ? (pagesGrid.scrollTop / maxScroll) * maxTop : 0;
+        railThumb.style.height = thumbH + 'px';
+        railThumb.style.top = Math.round(top) + 'px';
+      }
+
+      // 滚动时短暂提亮滑轨，停下 0.7s 恢复低调
+      function glowRail(){
+        if (!pagesRail) return;
+        pagesRail.classList.add('is-active');
+        clearTimeout(railGlowTimer);
+        railGlowTimer = setTimeout(() => pagesRail.classList.remove('is-active'), 700);
+      }
+
+      if (pagesGrid) {
+        pagesGrid.addEventListener('scroll', () => { syncRail(); glowRail(); }, { passive: true });
+        // 列数切换 / 面板展开都会改可视高度，交给 ResizeObserver 兜住
+        if (window.ResizeObserver) {
+          new ResizeObserver(() => syncRail()).observe(pagesGrid);
+        }
+      }
+
+      if (pagesRail && railThumb && pagesGrid) {
+        pagesRail.addEventListener('pointerdown', e => {
+          if (!pagesBody.classList.contains('has-scroll')) return;
+          e.preventDefault();
+          const track  = pagesRail.clientHeight;
+          const thumbH = railThumb.offsetHeight;
+          const maxTop = Math.max(1, track - thumbH);
+          const maxScroll = pagesGrid.scrollHeight - pagesGrid.clientHeight;
+          const y = e.clientY - pagesRail.getBoundingClientRect().top;
+          const onThumb = y >= railThumb.offsetTop - 2 && y <= railThumb.offsetTop + thumbH + 2;
+          // 落在空白轨上：滑块中心直接跳到指针处，再继续拖
+          if (!onThumb) {
+            const ratio = Math.min(1, Math.max(0, (y - thumbH / 2) / maxTop));
+            pagesGrid.scrollTop = ratio * maxScroll;
+          }
+          railDrag = { startY: e.clientY, startTop: pagesGrid.scrollTop };
+          pagesRail.classList.add('is-drag');
+          try { pagesRail.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
+          glowRail();
+          syncRail();
+        });
+
+        pagesRail.addEventListener('pointermove', e => {
+          if (!railDrag) return;
+          const track  = pagesRail.clientHeight;
+          const thumbH = railThumb.offsetHeight;
+          const maxTop = Math.max(1, track - thumbH);
+          const maxScroll = pagesGrid.scrollHeight - pagesGrid.clientHeight;
+          pagesGrid.scrollTop = railDrag.startTop + (e.clientY - railDrag.startY) / maxTop * maxScroll;
+        });
+
+        const endRailDrag = e => {
+          if (!railDrag) return;
+          railDrag = null;
+          pagesRail.classList.remove('is-drag');
+          try { pagesRail.releasePointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
+        };
+        pagesRail.addEventListener('pointerup', endRailDrag);
+        pagesRail.addEventListener('pointercancel', endRailDrag);
+
+        // 滑轨不是滚动容器，指针停在上面时滚轮得手动转给网格
+        pagesRail.addEventListener('wheel', e => {
+          if (!pagesBody.classList.contains('has-scroll')) return;
+          e.preventDefault();
+          pagesGrid.scrollTop += e.deltaY;
+        }, { passive: false });
+      }
+
+      // ---- 列数切换（单列 / 双列 / 三列） ----
+      // 只改 .pages-grid 的 data-cols，具体宽度与 iframe 缩放比都在 CSS 里按档位定义；
+      // 选择记进 localStorage，下次打开沿用。默认双列。
+      const colsBtns = menu.querySelectorAll('.pages-cols button');
+      const COLS_KEY = 'ppt.pagesCols';
+
+      function applyCols(n){
+        const cols = (n === 1 || n === 3) ? n : 2;
+        if (pagesGrid) pagesGrid.dataset.cols = String(cols);
+        for (let i = 0; i < colsBtns.length; i++) {
+          colsBtns[i].setAttribute('aria-pressed',
+            Number(colsBtns[i].dataset.cols) === cols ? 'true' : 'false');
+        }
+        try { localStorage.setItem(COLS_KEY, String(cols)); } catch (err) { /* 受限环境忽略 */ }
+        // 列数改了，网格高度与滑块比例都要跟着重算（面板还没展开时 syncRail 自己会跳过）
+        requestAnimationFrame(syncRail);
+      }
+
+      let savedCols = 2;
+      try {
+        const v = Number(localStorage.getItem(COLS_KEY));
+        if (v === 1 || v === 3) savedCols = v;
+      } catch (err) { /* localStorage 不可用时退回默认双列 */ }
+      applyCols(savedCols);
+
+      // 首次打开才构建：避免一进页面就把全部分页各加载一遍
+      function buildPages(){
+        if (pagesBuilt || !pagesGrid || !window.pptPages) return;
+        const files  = window.pptPages.files();
+        const titles = window.pptPages.titles();
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < files.length; i++) {
+          const name = titles[i] || '';
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'page-item';
+          btn.dataset.index = String(i);
+          btn.title = '第 ' + (i + 1) + ' 页' + (name ? ' · ' + name : '');
+          btn.setAttribute('aria-label', btn.title);
+
+          const thumb = document.createElement('span');
+          thumb.className = 'page-thumb';
+
+          // 缩略图 = 真实分页 HTML 按 1280×720 视口渲染后等比缩小
+          const frame = document.createElement('iframe');
+          frame.src = 'pages/' + files[i];
+          frame.setAttribute('tabindex', '-1');
+          frame.setAttribute('aria-hidden', 'true');
+          frame.setAttribute('scrolling', 'no');
+          frame.setAttribute('loading', 'lazy');
+          thumb.appendChild(frame);
+
+          // 序号是数组下标（1、2、3…），与文件名里的编号无关：
+          // pages 里的 1-、03-、0006- 在目录里就是连续的 1、2、3。
+          const cap = document.createElement('span');
+          cap.className = 'page-cap';
+
+          const num = document.createElement('span');
+          num.className = 'page-num';
+          num.textContent = String(i + 1);
+          cap.appendChild(num);
+
+          if (name) {
+            const label = document.createElement('span');
+            label.className = 'page-name';
+            label.textContent = name;
+            cap.appendChild(label);
+          }
+
+          btn.appendChild(thumb);
+          btn.appendChild(cap);
+          frag.appendChild(btn);
+        }
+        pagesGrid.appendChild(frag);
+        pagesBuilt = true;
+      }
+
+      // 右键是否落在「可见的页码」上。
+      // 页码是 pointer-events:none（避免它抢事件、影响靠近判定），右键实际落在 iframe 里，
+      // 父页面拿不到 target，因此这里按坐标矩形命中判断。
+      function hitIndicator(x, y){
+        const el = document.getElementById('page-indicator');
+        if (!el || !el.classList.contains('show')) return false;
+        const r = el.getBoundingClientRect();
+        return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+      }
+
+      // context：'subtitle' 在可见字幕条上右键（出三档）；
+      //          落在可见页码上 → 自动升级为 'pages'（跳转面板）；其余为页面菜单
+      //
+      // 位置计算单独抽成 positionMenu()：切换列数会改变面板宽度，需要原地重排，
+      // 复用同一份逻辑，别在两处各写一遍。
+      let menuAnchor = { ctx: 'page', x: 0, y: 0 };
+
+      function positionMenu(){
+        const ctx = menuAnchor.ctx;
+        // 先切好组再量尺寸：不同上下文的可见项数量不同，尺寸会变。
+        // 用 offsetWidth/Height（不受 transform scale 影响），算好位置再显示，避免开在旧位置闪一下。
+        const pad = 8;
+        const w = menu.offsetWidth, h = menu.offsetHeight;
+        let left = menuAnchor.x + 2, top = menuAnchor.y + 2;
+        if (ctx === 'subtitle') {
+          // 字幕通常贴在底部：面板优先贴字幕条上沿弹出，避免把字幕内容盖住；
+          // 字幕被拖到顶部附近、上方放不下时，再翻到字幕条下方。
+          const sr = container.getBoundingClientRect();
+          top = sr.top - pad - h;
+          if (top < pad) top = Math.min(sr.bottom + pad, window.innerHeight - pad - h);
+        } else if (ctx === 'pages') {
+          // 页码在顶部居中：面板与页码同轴居中，并吸附在页码下沿，视觉上像页码展开的抽屉
+          const pr = document.getElementById('page-indicator').getBoundingClientRect();
+          left = pr.left + pr.width / 2 - w / 2;
+          top = pr.bottom + pad;
+        }
+        // pages 面板右缘外还探着一条悬浮滚动条（滑轨宽 4px + 间距 5px ≈ 9px），
+        // 贴窗口右缘时要把它一并算进留白，否则滑轨会被窗口裁掉一半。
+        const padRight = pad + (ctx === 'pages' ? 16 : 0);
+        if (left + w > window.innerWidth - padRight)  left = Math.max(pad, window.innerWidth - padRight - w);
+        if (top  + h > window.innerHeight - pad) top  = Math.max(pad, window.innerHeight - pad - h);
+        if (left < pad) left = pad;
+        if (top < pad) top = pad;
+        menu.style.left = left + 'px';
+        menu.style.top  = top + 'px';
+      }
+
+      function openMenu(x, y, context){
+        let ctx = (context === 'subtitle') ? 'subtitle' : 'page';
+        if (ctx === 'page' && hitIndicator(x, y)) ctx = 'pages';
+        if (ctx === 'pages') buildPages();
+        menu.dataset.context = ctx;
+        refreshMenu();
+        menuAnchor = { ctx: ctx, x: x, y: y };
+        positionMenu();
+        menu.classList.add('show');
+        menu.setAttribute('aria-hidden', 'false');
+        menuOpen = true;
+        // 展开后才量得到网格可视高度：下一帧同步悬浮滚动条的长度与位置
+        if (ctx === 'pages') requestAnimationFrame(syncRail);
+      }
+
+      function closeMenu(){
+        if (!menuOpen) return;
+        menuOpen = false;
+        menu.classList.remove('show');
+        menu.setAttribute('aria-hidden', 'true');
+      }
+
+      // 父页面区域右键：屏蔽浏览器原生菜单。
+      // 落在字幕条上 → 字幕菜单（三档）；落在其它地方 → 页面菜单（目前只有「显示字幕」）。
+      document.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        const onSubtitle = e.target.closest && e.target.closest('#subtitle-container');
+        openMenu(e.clientX, e.clientY, onSubtitle ? 'subtitle' : 'page');
+      });
+
+      // 点面板外部关闭；面板内部点击交给下面的选项处理。
+      // 注意：这只是父页面这一半——点击落在 iframe 上时父页面收不到 mousedown，
+      // 由 iframe 内注入的 mousedown 兜住（见 loadSlide 里 pptSubtitle.closeMenu）。
+      document.addEventListener('mousedown', e => {
+        if (!menuOpen) return;
+        if (menu.contains(e.target)) return;
+        closeMenu();
+      }, true);
+
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') closeMenu();
+      });
+
+      window.addEventListener('resize', closeMenu);
+
+      menu.addEventListener('click', e => {
+        // 列数切换：面板不关，切完就地重排（宽度变了，位置要跟着重算）
+        const colBtn = e.target.closest && e.target.closest('.pages-cols button');
+        if (colBtn) {
+          applyCols(Number(colBtn.dataset.cols));
+          positionMenu();
+          // 列数变化后当前页可能滚出可视区，把它拉回来
+          const act = pagesGrid && pagesGrid.querySelector('.page-item.active');
+          if (act && act.scrollIntoView) act.scrollIntoView({ block: 'nearest' });
+          return;
+        }
+
+        // 分页缩略图：点击直接跳转
+        const tile = e.target.closest && e.target.closest('.page-item');
+        if (tile) {
+          const i = Number(tile.dataset.index);
+          closeMenu();
+          if (window.pptPages) window.pptPages.go(i);
+          return;
+        }
+
+        const btn = e.target.closest && e.target.closest('.ctx-item');
+        if (!btn) return;
+        if (btn.dataset.mode) {
+          mode = btn.dataset.mode;
+        } else if (btn.dataset.action === 'show-subtitle') {
+          // 页面菜单里点「显示字幕」：直接进入持久显示，
+          // 否则切到悬停档的话鼠标一移开又没了，用户会以为没生效
+          mode = 'persist-show';
+        } else {
+          return;
+        }
+        applyMode({ keepVisible: true });
+        closeMenu();
+      });
+
+      applyMode();   // 初始应用（默认 hover → 字幕默认隐藏）
+
+      // 供 iframe 内的 mousemove / contextmenu 调用
+      window.pptSubtitle = {
+        onMove: onMove,
+        openMenu: openMenu,
+        closeMenu: closeMenu,
+        getMode: function(){ return mode; }
+      };
+    })();
+  </script>
+  <script src="js/pages.js"></script>
+  <script>
+    // 分页清单来自 js/pages.js（由 generate_index.py 整份生成）
+    if (typeof slideFiles === 'undefined' || !slideFiles.length) {
+      // 外链缺失或尚未生成：给一句人话，而不是一屏 ReferenceError
+      document.getElementById('slide-container').innerHTML =
+        '<p style="color:#888;font:14px/1.6 sans-serif;padding:24px">缺少 js/pages.js，请先运行 python generate_index.py</p>';
+      throw new Error('js/pages.js 未加载');
+    }
+    let currentIndex = 0;
+    const container = document.getElementById('slide-container');
+    const prevBtn   = document.getElementById('prevBtn');
+    const nextBtn   = document.getElementById('nextBtn');
+    const pageIndicator = document.getElementById('page-indicator');
+    function loadSlide(index){
+      container.innerHTML = '';
+      const iframe = document.createElement('iframe');
+      iframe.src = 'pages/' + slideFiles[index];
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = 'none';
+      container.appendChild(iframe);
+
+      // forward keydown events from iframe to parent
+      iframe.onload = function(){
+        const win = iframe.contentWindow;
+        if (!win) return;
+        const controlsEl = document.getElementById('controls');
+        let controlsShown = false;     // 左右翻页按钮是否显示
+        let indicatorShown = false;    // 页码是否因「靠近页码自身」而显示
+        const ENTER_RADIUS = 90, EXIT_RADIUS = 200;   // 按钮：进出半径不同形成迟滞，消除边界闪烁
+        const IND_ENTER = 70, IND_EXIT = 160;         // 页码：同样用迟滞，半径略小（页码体积更小）
+
+        // 点到矩形的最短距离（点在矩形内部时为 0）。
+        // 页码是扁长条，用中心距判定会把正下方一大片都算进来，改用矩形距离更贴合手感。
+        function distToRect(x, y, r){
+          const dx = Math.max(r.left - x, 0, x - r.right);
+          const dy = Math.max(r.top - y, 0, y - r.bottom);
+          return Math.hypot(dx, dy);
+        }
+
+        // 按钮与页码是两个独立开关：靠近左右按钮显示按钮+页码，
+        // 只靠近页码时仅显示页码（页码不参与按钮显示，避免顶部误触发大片按钮）。
+        function syncControls(){
+          controlsEl.classList.toggle('show', controlsShown);
+          if (pageIndicator) {
+            pageIndicator.classList.toggle('show', controlsShown || indicatorShown);
+          }
+        }
+
+        // 翻页会新建 iframe、重建闭包（状态归零），但 DOM 上的 .show 仍残留。
+        // 继承现有状态，避免鼠标静止时控件突然消失；鼠标一动即按距离重新判定。
+        controlsShown = controlsEl.classList.contains('show');
+        indicatorShown = pageIndicator ? pageIndicator.classList.contains('show') : false;
+
+        // 键盘转发（同源下有效）
+        try {
+          win.document.addEventListener('keydown', e => {
+            // 焦点在输入框 / 可编辑元素内时不转发，避免破坏原生文字输入
+            const t = e.target;
+            const isEditable = t && (
+              t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+              t.isContentEditable
+            );
+            if (isEditable) return;
+
+            // 选中文字 / 点进分页内容后，按键 target 不再是 body，
+            // 故不再限制 target===body，统一转发给父页面处理
+            const ev = new KeyboardEvent('keydown', {
+              key: e.key,
+              code: e.code,
+              keyCode: e.keyCode,
+              repeat: e.repeat,
+              ctrlKey: e.ctrlKey,
+              shiftKey: e.shiftKey,
+              altKey: e.altKey,
+              metaKey: e.metaKey,
+              bubbles: true,
+              cancelable: true,
+              composed: true
+            });
+            ev.detail = { forwarded: true };
+            document.dispatchEvent(ev);
+          });
+        } catch (_) {}
+
+        // 鼠标靠近左右按钮时显隐翻页控件。
+        // 关键：分页区是 iframe 且铺满视口，鼠标在幻灯片上移动时父页面收不到
+        // mousemove，因此监听必须挂在 iframe 内部；iframe 与父页面同视口，
+        // 其 clientX/Y 与父页面一致，可直接用按钮的 getBoundingClientRect 判定。
+        try {
+          win.document.addEventListener('mousemove', e => {
+            const rPrev = prevBtn.getBoundingClientRect();
+            const rNext = nextBtn.getBoundingClientRect();
+            const x = e.clientX, y = e.clientY;
+            const dPrev = Math.hypot(x-(rPrev.left+rPrev.width/2), y-(rPrev.top+rPrev.height/2));
+            const dNext = Math.hypot(x-(rNext.left+rNext.width/2), y-(rNext.top+rNext.height/2));
+            const d = Math.min(dPrev, dNext);
+            // 迟滞：显示后需远离到 EXIT_RADIUS 才收起，靠近后稳定停在显示态，不闪烁
+            controlsShown = controlsShown ? d < EXIT_RADIUS : d < ENTER_RADIUS;
+
+            // 页码同款「靠近显隐」：判定到页码矩形的距离，同样带迟滞
+            if (pageIndicator) {
+              const di = distToRect(x, y, pageIndicator.getBoundingClientRect());
+              indicatorShown = indicatorShown ? di < IND_EXIT : di < IND_ENTER;
+            }
+
+            syncControls();
+
+            // 字幕悬停显隐（仅「悬停显示」档生效，其它档在内部直接返回）
+            if (window.pptSubtitle) window.pptSubtitle.onMove(x, y);
+          });
+          // 注意：不要监听 iframe 的 mouseleave 来隐藏控件。
+          // 控件按钮显示后 pointer-events:auto，会覆盖在 iframe 之上；鼠标落到按钮上时
+          // iframe 会触发 mouseleave → 隐藏按钮 → 鼠标又穿透回 iframe → 再显示 → 再 mouseleave，
+          // 形成无限显隐循环（正是之前「一直闪烁」的根因）。隐藏统一交给上面的迟滞距离判定。
+        } catch (_) {}
+
+        // 幻灯片内右键：屏蔽浏览器原生菜单，改弹「页面菜单」。
+        // 落在 iframe 里的右键一定不是字幕条（字幕是父页面元素，显示时覆盖在 iframe 之上），
+        // 故这里固定按 page 上下文打开。
+        try {
+          win.document.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            if (window.pptSubtitle) window.pptSubtitle.openMenu(e.clientX, e.clientY, 'page');
+          });
+
+          // 点击落在 iframe 上（即面板之外）时关闭面板。
+          // 关键：父页面 document 的 mousedown 收不到这类点击——事件只发生在 iframe 文档内，
+          // 正是「点了别处面板不消失」的原因，必须在这里补一个监听。
+          win.document.addEventListener('mousedown', () => {
+            if (window.pptSubtitle) window.pptSubtitle.closeMenu();
+          });
+        } catch (_) {}
+      };
+
+      localStorage.setItem('ppt-current', index);
+      // Update button disabled state
+      prevBtn.disabled = currentIndex===0;
+      nextBtn.disabled = currentIndex===slideFiles.length-1;
+      // Update page indicator
+      if (pageIndicator) pageIndicator.textContent = (currentIndex+1) + ' / ' + slideFiles.length;
+    }
+    function prev(){ if(currentIndex>0){ currentIndex--; loadSlide(currentIndex); } }
+    function next(){ if(currentIndex<slideFiles.length-1){ currentIndex++; loadSlide(currentIndex); } }
+    prevBtn.addEventListener('click', prev);
+    nextBtn.addEventListener('click', next);
+
+    // 供右键「分页跳转面板」调用。
+    // 不直接暴露 currentIndex：它是 let 词法绑定，不挂在 window 上，别处读不到。
+    window.pptPages = {
+      files: function(){ return slideFiles.slice(); },
+      titles: function(){ return slideTitles.slice(); },
+      current: function(){ return currentIndex; },
+      go: function(i){
+        if (typeof i !== 'number' || i < 0 || i >= slideFiles.length) return;
+        currentIndex = i;
+        loadSlide(i);
+      }
+    };
+
+    const stored = parseInt(localStorage.getItem('ppt-current'),10);
+    currentIndex = Number.isNaN(stored)?0:stored;
+    loadSlide(currentIndex);
+  </script>
+  <script>
+    // 字幕拖拽：Pointer Events + setPointerCapture
+    // 关键：指针被捕获后，即使鼠标移到 iframe 之上或移出窗口，pointermove 仍持续派发到
+    // 字幕条，从根本上解决「移动快跟丢鼠标」与「超出范围就拖不动」的问题。
+    (function(){
+      const el=document.getElementById('subtitle-container');
+      if(!el) return;
+      const KEEP=48;   // 允许拖出视口边缘，但至少保留 48px 可见，避免完全丢失
+      const NAV_H=34;  // 字幕上方导航按钮行的高度（26px 按钮 + 8px hover 桥），拖到顶边时一并算进可见区
+      let dragging=false, pid=null, grabDX=0, grabDY=0, elW=0, elH=0;
+
+      el.addEventListener('pointerdown', e=>{
+        if(e.button!==0) return;                                          // 仅左键
+        // 点导航按钮或按钮行里的空隙都不启动拖拽，避免点按钮时字幕跟着跑
+        if(e.target.closest && e.target.closest('.subtitle-navs')) return;
+        const rect=el.getBoundingClientRect();
+        elW=rect.width; elH=rect.height;
+        const centerX=rect.left+rect.width/2;   // 视觉中心 x
+        grabDX=e.clientX-centerX;               // 指针相对中心 x 的偏移
+        grabDY=e.clientY-rect.top;              // 指针相对上边缘的偏移
+        // 保留 translateX(-50%) 锚点：切换字幕（内容长短变化）时中心固定不动
+        el.style.transform='translateX(-50%)';
+        el.style.bottom='auto';
+        el.style.left=centerX+'px';
+        el.style.top=rect.top+'px';
+        dragging=true; pid=e.pointerId;
+        try{ el.setPointerCapture(e.pointerId); }catch(_){}               // 捕获指针
+        e.preventDefault();
+      });
+
+      el.addEventListener('pointermove', e=>{
+        if(!dragging || e.pointerId!==pid) return;
+        const centerX=e.clientX-grabDX;
+        const top=e.clientY-grabDY;
+        // 允许部分移出视口，但每边至少保留 KEEP px 可见；
+        // 上边界再收紧一点，保证探在字幕上方的按钮行不会整排跑到屏幕外
+        const minCenter=KEEP-elW/2;
+        const maxCenter=Math.max(minCenter, window.innerWidth-KEEP+elW/2);
+        const minTop=Math.max(-(elH-KEEP), NAV_H-4);
+        const maxTop=Math.max(minTop, window.innerHeight-KEEP);
+        const cx=Math.max(minCenter, Math.min(centerX, maxCenter));
+        const ty=Math.max(minTop, Math.min(top, maxTop));
+        el.style.left=cx+'px';
+        el.style.top=ty+'px';
+      });
+
+      function endDrag(){
+        if(!dragging) return;
+        dragging=false;
+        try{ if(pid!==null) el.releasePointerCapture(pid); }catch(_){}
+        pid=null;
+      }
+      el.addEventListener('pointerup', endDrag);
+      el.addEventListener('pointercancel', endDrag);
+      window.addEventListener('pointerup', endDrag);   // 兜底
+    })();
+  </script>
+  <script>
+    // 字幕导航按钮：左侧=上一条，右侧=下一条；hover 字幕区显隐，点击不触发拖拽
+    (function(){
+      const container = document.getElementById('subtitle-container');
+      const prevNav = container && container.querySelector('.subtitle-nav.prev');
+      const nextNav = container && container.querySelector('.subtitle-nav.next');
+      if (!prevNav || !nextNav) return;
+      function updateNavState(){
+        prevNav.disabled = subtitleIdx <= 0;
+        nextNav.disabled = subtitleIdx >= subtitleLines.length - 1;
+      }
+      function showSubtitle(idx){
+        if (!subtitleLines.length) return;
+        subtitleIdx = Math.max(0, Math.min(subtitleLines.length - 1, idx));
+        subtitleElement.innerText = subtitleLines[subtitleIdx];
+        updateNavState();
+      }
+      prevNav.addEventListener('click', () => showSubtitle(subtitleIdx - 1));
+      nextNav.addEventListener('click', () => showSubtitle(subtitleIdx + 1));
+      // 阻止按钮 mousedown 冒泡到容器，避免触发字幕拖拽
+      [prevNav, nextNav].forEach(btn => {
+        btn.addEventListener('mousedown', e => e.stopPropagation());
+      });
+      updateNavState();
+    })();
+  </script>
+</body>
+</html>

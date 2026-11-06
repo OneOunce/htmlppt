@@ -1,0 +1,24 @@
+<svg width="960" height="960" viewBox="0 0 960 960" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 外环渐变 -->
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4096ff"/>
+      <stop offset="100%" stop-color="#0066ee"/>
+    </linearGradient>
+
+    <!-- 卡片渐变 -->
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4096ff" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#22ddff" stop-opacity="0.5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 外圈圆环 -->
+  <circle cx="480" cy="480" r="380" fill="none" stroke="url(#ringGrad)" stroke-width="70" stroke-linecap="round"/>
+
+  <!-- 后方幻灯片卡片，放大 -->
+  <rect x="230" y="270" width="420" height="320" rx="22" fill="url(#cardGrad)" />
+
+  <!-- 前方幻灯片卡片，放大 -->
+  <rect x="310" y="350" width="420" height="320" rx="22" fill="url(#cardGrad)" />
+</svg>

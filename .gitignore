@@ -1,0 +1,6 @@
+docs/
+.ignore/
+.workbuddy/
+__pycache__/
+*.pyc
+favicon.psd

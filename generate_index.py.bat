@@ -1,0 +1,2 @@
+python generate_index.py
+pause
